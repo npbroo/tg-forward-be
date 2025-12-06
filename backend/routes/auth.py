@@ -1,25 +1,29 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
+
 from models import (
     StartLoginResponse,
     ConfirmLoginRequest,
     SessionModel,
+    LoginRequest,
+    LoginResponse,
 )
 from telegram_session import start_login, confirm_login
 from shared.redis_client import redis_get_json
 from config import settings
+from auth_jwt import get_current_admin, login as jwt_login
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def require_admin(x_admin_token: str = Header(..., alias="X-Admin-Token")):
-    if x_admin_token != settings.ADMIN_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid admin token")
-    return True
+@router.post("/login", response_model=LoginResponse)
+async def auth_login(body: LoginRequest):
+    """Exchange username/password for a JWT access token."""
+    return await jwt_login(body)
 
 
 @router.get("/start", response_model=StartLoginResponse)
 async def auth_start(
-    _: bool = Depends(require_admin),
+    _: str = Depends(get_current_admin),
 ):
     """
     Start Telegram login using the phone configured in the environment.
@@ -37,7 +41,7 @@ async def auth_start(
 @router.post("/confirm", response_model=SessionModel)
 async def auth_confirm(
     body: ConfirmLoginRequest,
-    _: bool = Depends(require_admin),
+    _: str = Depends(get_current_admin),
 ):
     """
     Confirm Telegram login using login_id + code, store final session.
@@ -60,7 +64,7 @@ async def auth_confirm(
 
 @router.get("/session", response_model=SessionModel)
 async def auth_session(
-    _: bool = Depends(require_admin),
+    _: str = Depends(get_current_admin),
 ):
     """
     Get the default Telegram session.

@@ -1,25 +1,17 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Header
+from fastapi import APIRouter, Depends, HTTPException, Path
 
 from models import RouteCreateRequest, RouteUpdateRequest, RouteModel
 from shared.redis_client import redis_set_json, redis_get_json, redis_scan_json, redis_client
 from shared.pubsub import notify_forwarder_reload
-from config import settings
+from auth_jwt import get_current_admin
 
 router = APIRouter(prefix="/routes", tags=["routes"])
-
-
-def require_admin(x_admin_token: str = Header(..., alias="X-Admin-Token")):
-    if x_admin_token != settings.ADMIN_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid admin token")
-    return True
-
-
 @router.post("", response_model=RouteModel)
 async def create_route(
     body: RouteCreateRequest,
-    _: bool = Depends(require_admin),
+    _: str = Depends(get_current_admin),
 ):
     route_id = f"route_{uuid.uuid4().hex}"
     data = {
@@ -36,7 +28,7 @@ async def create_route(
 
 @router.get("", response_model=list[RouteModel])
 async def list_routes(
-    _: bool = Depends(require_admin),
+    _: str = Depends(get_current_admin),
 ):
     raw_routes = await redis_scan_json("tg:route:route_*")
     return [RouteModel(**r) for r in raw_routes]
@@ -46,7 +38,7 @@ async def list_routes(
 async def update_route(
     body: RouteUpdateRequest,
     route_id: str = Path(...),
-    _: bool = Depends(require_admin),
+    _: str = Depends(get_current_admin),
 ):
     key = f"tg:route:{route_id}"
     existing = await redis_get_json(key)
@@ -72,7 +64,7 @@ async def update_route(
 @router.delete("/{route_id}")
 async def delete_route(
     route_id: str = Path(...),
-    _: bool = Depends(require_admin),
+    _: str = Depends(get_current_admin),
 ):
     key = f"tg:route:{route_id}"
     existing = await redis_get_json(key)

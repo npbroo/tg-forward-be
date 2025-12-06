@@ -1,22 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 
 from models import DialogModel
 from shared.redis_client import redis_get_json, redis_scan_json
 from telegram_session import fetch_dialogs
-from config import settings
+from auth_jwt import get_current_admin
 
 router = APIRouter(prefix="/dialogs", tags=["dialogs"])
-
-
-def require_admin(x_admin_token: str = Header(..., alias="X-Admin-Token")):
-    if x_admin_token != settings.ADMIN_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid admin token")
-    return True
-
-
 @router.get("", response_model=list[DialogModel])
 async def get_dialogs(
-    _: bool = Depends(require_admin),
+    _: str = Depends(get_current_admin),
 ):
     """
     Always use the default Telegram session.

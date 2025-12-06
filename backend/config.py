@@ -18,4 +18,11 @@ class Settings(BaseSettings):
     TG_API_HASH: str
     TG_PHONE: str
 
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_PASSWORD: str = "change-me-please"
+
+    JWT_SECRET: str = "change-me"
+    JWT_ALGO: str = "HS256"
+    JWT_EXPIRE_MINUTES: int = 1440
+
 settings = Settings()
