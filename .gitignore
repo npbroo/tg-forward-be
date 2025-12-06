@@ -1,0 +1,37 @@
+# ----------------------
+# Python / Virtualenv
+# ----------------------
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ----------------------
+# FastAPI / Backend
+# ----------------------
+backend/.env
+backend/*.sqlite3
+backend/*.db
+backend/*.log
+
+# ----------------------
+# Telegram sessions (sensitive!)
+# ----------------------
+*.session
+*.session-journal
+*.session*  # catches StringSession dumps if accidentally saved
+
+# ----------------------
+# Node / Frontend
+# ----------------------
+node_modules/
+dist/
+.dockerignore
+
+# ----------------------
+# OS / Editor junk
+# ----------------------
+.DS_Store
+.idea/
+.vscode/
