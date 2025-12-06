@@ -10,8 +10,6 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore"  # Ignore extra fields from .env file
     )
-
-    ADMIN_TOKEN: str = "dev-token"
     REDIS_URL: str
 
     TG_API_ID: int
@@ -19,9 +17,9 @@ class Settings(BaseSettings):
     TG_PHONE: str
 
     ADMIN_USERNAME: str = "admin"
-    ADMIN_PASSWORD: str = "change-me-please"
+    ADMIN_PASSWORD: str = "password"
 
-    JWT_SECRET: str = "change-me"
+    JWT_SECRET: str = "super-long-random-string-change-me"
     JWT_ALGO: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 1440
 
