@@ -75,7 +75,7 @@ async def main():
         line = f"{dialog_type}\t{name}\t{username_or_phone}\t{dialog_id}\n"
         lines.append(line)
 
-    out_file = "telegram_dialogs.txt"
+    out_file = "scripts/dump/telegram_dialogs.txt"
     with open(out_file, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
