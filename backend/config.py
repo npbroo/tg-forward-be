@@ -16,5 +16,6 @@ class Settings(BaseSettings):
 
     TG_API_ID: int
     TG_API_HASH: str
+    TG_PHONE: str
 
 settings = Settings()

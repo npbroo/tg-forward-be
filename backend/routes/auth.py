@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Header
 from models import (
-    StartLoginRequest,
     StartLoginResponse,
     ConfirmLoginRequest,
     SessionModel,
@@ -18,16 +17,20 @@ def require_admin(x_admin_token: str = Header(..., alias="X-Admin-Token")):
     return True
 
 
-@router.post("/start", response_model=StartLoginResponse)
+@router.get("/start", response_model=StartLoginResponse)
 async def auth_start(
-    body: StartLoginRequest,
     _: bool = Depends(require_admin),
 ):
     """
-    Start Telegram login: send SMS/Telegram code to this phone.
+    Start Telegram login using the phone configured in the environment.
     Returns login_id to be used with /auth/confirm.
     """
-    login_id = await start_login(body.phone)
+    phone = settings.TG_PHONE
+
+    if not phone:
+        raise HTTPException(status_code=500, detail="Missing TG_PHONE configuration")
+
+    login_id = await start_login(phone)
     return StartLoginResponse(login_id=login_id)
 
 

@@ -1,10 +1,6 @@
 from pydantic import BaseModel
 
 
-class StartLoginRequest(BaseModel):
-    phone: str
-
-
 class StartLoginResponse(BaseModel):
     login_id: str
 
