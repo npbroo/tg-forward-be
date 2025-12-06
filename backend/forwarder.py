@@ -1,3 +1,4 @@
+import asyncio
 import re
 from typing import Optional, Union, List, Dict
 
@@ -7,7 +8,7 @@ from telethon.tl.types import User, Chat, Channel
 from telethon.tl.custom.dialog import Dialog
 
 from config import settings
-from shared.redis_client import redis_get_json, redis_scan_json
+from shared.redis_client import redis_get_json, redis_scan_json, redis_client
 from telegram_session import TelegramSessionManager
 
 try:
@@ -18,7 +19,7 @@ except ImportError:
     print("Warning: solders not installed. Solana address validation will be disabled.")
 
 
-CA_REGEX = re.compile(r"\b([1-9A-HJ-NP-Za-km-z]{32,44})\b")
+CA_REGEX = re.compile(r"(?<![1-9A-HJ-NP-Za-km-z])([1-9A-HJ-NP-Za-km-z]{32,44})(?![1-9A-HJ-NP-Za-km-z])")
 
 
 def parse_chat_id(value: Union[str, int]) -> Union[str, int]:
@@ -140,13 +141,19 @@ async def resolve_route_targets(client: TelegramClient, route_configs: List[Dict
             rc["target_entity"] = target_entity
 
 
-async def run_forwarder():
-    """Main forwarder worker loop."""
+FORWARDER_RELOAD_CHANNEL = "forwarder:reload"
+
+
+async def run_forwarder_instance(shutdown_event: asyncio.Event):
+    """
+    Run a single instance of the forwarder.
+    Returns when shutdown_event is set or client disconnects.
+    """
     session_str = await load_default_session_str()
     routes = await load_enabled_routes()
 
     if not routes:
-        print("No enabled routes found. Exiting.")
+        print("No enabled routes found.")
         return
 
     manager = TelegramSessionManager(session_str=session_str)
@@ -174,29 +181,41 @@ async def run_forwarder():
         ent = event.chat
         src_id = getattr(ent, "id", None)
         username = getattr(ent, "username", None)
+        chat_id = event.chat_id
 
-        # find matching routes for this event
+        # Find matching routes for this event
         matched_routes = []
         for rc in route_configs:
             src = rc["source_chat"]
 
-            # numeric match: use entity id (positive)
-            if isinstance(src, int) and isinstance(src_id, int) and src == src_id:
-                matched_routes.append(rc)
+            # Numeric match: compare absolute values to handle positive/negative IDs
+            if isinstance(src, int):
+                # Try matching with src_id first
+                if isinstance(src_id, int) and src == src_id:
+                    matched_routes.append(rc)
+                # Also try matching with chat_id (handles negative IDs)
+                elif abs(src) == abs(chat_id):
+                    matched_routes.append(rc)
 
-            # string match: treat as username
+            # String match: treat as username
             elif isinstance(src, str) and username and src.lower() == username.lower():
                 matched_routes.append(rc)
 
         if not matched_routes:
             return
 
-        original_text = event.raw_text or ""
+        # Try raw_text first, fallback to text, then message attribute
+        original_text = event.raw_text or event.text or getattr(event.message, 'message', '') or ""
+        text_preview = original_text.replace('\n', ' ')[:60]
 
         for rc in matched_routes:
             new_text = transform_message(original_text, rc["transform_type"])
+
             if new_text is None:
+                print(f"[SKIP] {rc['route_id']} | No match | {text_preview}...")
                 continue
+
+            print(f"[FORWARD] {rc['route_id']} | Matched: {new_text[:44]} | From: {text_preview}...")
 
             target_entity = rc.get("target_entity")
             if target_entity is None:
@@ -214,4 +233,67 @@ async def run_forwarder():
     # Resolve target entities once using dialogs
     await resolve_route_targets(client, route_configs)
 
-    await client.run_until_disconnected()
+    # Wait for shutdown signal
+    try:
+        await shutdown_event.wait()
+        print("[RELOAD] Shutdown signal received, disconnecting...")
+    finally:
+        await client.disconnect()
+
+
+async def run_forwarder():
+    """
+    Main forwarder worker loop with Redis pub/sub reload support.
+    Listens for reload signals and restarts the forwarder when configuration changes.
+    """
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(FORWARDER_RELOAD_CHANNEL)
+    print(f"[PUBSUB] Subscribed to {FORWARDER_RELOAD_CHANNEL}")
+
+    while True:
+        # Create shutdown event for this instance
+        shutdown_event = asyncio.Event()
+
+        # Start forwarder instance
+        forwarder_task = asyncio.create_task(run_forwarder_instance(shutdown_event))
+
+        # Listen for reload signals
+        async def listen_for_reload():
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    reason = message["data"].decode() if isinstance(message["data"], bytes) else message["data"]
+                    print(f"[RELOAD] Received reload signal: {reason}")
+                    shutdown_event.set()
+                    break
+
+        reload_listener = asyncio.create_task(listen_for_reload())
+
+        # Wait for either task to complete
+        done, pending = await asyncio.wait(
+            [forwarder_task, reload_listener],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        # Cancel pending tasks
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # Wait for forwarder to fully stop
+        try:
+            await forwarder_task
+        except asyncio.CancelledError:
+            pass
+
+        # Check if we should continue (reload) or exit
+        if forwarder_task.done() and not shutdown_event.is_set():
+            # Forwarder exited on its own (error or no routes)
+            print("[FORWARDER] Exited, waiting 5s before retry...")
+            await asyncio.sleep(5)
+        else:
+            # Reload signal received
+            print("[RELOAD] Restarting forwarder with new configuration...")
+            await asyncio.sleep(1)  # Brief pause before restart

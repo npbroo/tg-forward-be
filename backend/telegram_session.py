@@ -5,6 +5,7 @@ from telethon.tl.types import User, Chat, Channel
 
 from config import settings
 from shared.redis_client import redis_set_json, redis_get_json, redis_scan_json
+from shared.pubsub import notify_forwarder_reload
 
 
 class TelegramSessionManager:
@@ -91,6 +92,9 @@ async def confirm_login(login_id: str, code: str) -> dict:
 
     # Set this as the default session
     await redis_set_json("tg:session:default", {"session_id": session_id})
+
+    # Notify forwarder to reload with new session
+    await notify_forwarder_reload("session_created")
 
     return session_data
 

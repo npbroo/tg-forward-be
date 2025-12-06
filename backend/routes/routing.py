@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Header
 
 from models import RouteCreateRequest, RouteUpdateRequest, RouteModel
 from shared.redis_client import redis_set_json, redis_get_json, redis_scan_json, redis_client
+from shared.pubsub import notify_forwarder_reload
 from config import settings
 
 router = APIRouter(prefix="/routes", tags=["routes"])
@@ -29,6 +30,7 @@ async def create_route(
         "enabled": body.enabled,
     }
     await redis_set_json(f"tg:route:{route_id}", data)
+    await notify_forwarder_reload("route_created")
     return RouteModel(**data)
 
 
@@ -42,8 +44,8 @@ async def list_routes(
 
 @router.patch("/{route_id}", response_model=RouteModel)
 async def update_route(
+    body: RouteUpdateRequest,
     route_id: str = Path(...),
-    body: RouteUpdateRequest = None,
     _: bool = Depends(require_admin),
 ):
     key = f"tg:route:{route_id}"
@@ -63,6 +65,7 @@ async def update_route(
         data["target_chat"] = body.target_chat
 
     await redis_set_json(key, data)
+    await notify_forwarder_reload("route_updated")
     return RouteModel(**data)
 
 
@@ -78,5 +81,6 @@ async def delete_route(
 
     # delete raw key
     await redis_client.delete(key)
+    await notify_forwarder_reload("route_deleted")
 
     return {"ok": True}
