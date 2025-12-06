@@ -1,4 +1,6 @@
 import uuid
+from datetime import datetime, timezone
+
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.types import User, Chat, Channel
@@ -80,12 +82,16 @@ async def confirm_login(login_id: str, code: str) -> dict:
     await client.disconnect()
 
     session_id = f"sess_{uuid.uuid4().hex}"
+    current_ts = datetime.now(timezone.utc).isoformat()
     session_data = {
         "session_id": session_id,
         "label": me.username or phone,
         "phone": phone,
         "session_str": final_session_str,
         "enabled": True,
+        "valid": True,
+        "last_error": None,
+        "last_checked": current_ts,
     }
 
     await redis_set_json(f"tg:session:{session_id}", session_data)
@@ -104,6 +110,36 @@ async def list_sessions() -> list[dict]:
     Return all stored Telegram sessions from Redis.
     """
     return await redis_scan_json("tg:session:*")
+
+
+async def mark_session_invalid(session_id: str, reason: str):
+    """Mark the given session as invalid/disabled with error metadata."""
+    key = f"tg:session:{session_id}"
+    session = await redis_get_json(key)
+    if not session:
+        return
+
+    session["enabled"] = False
+    session["valid"] = False
+    session["last_error"] = reason
+    session["last_checked"] = datetime.now(timezone.utc).isoformat()
+
+    await redis_set_json(key, session)
+
+
+async def mark_session_checked_ok(session_id: str):
+    """Refresh metadata when a session is healthy."""
+    key = f"tg:session:{session_id}"
+    session = await redis_get_json(key)
+    if not session:
+        return
+
+    session["valid"] = True
+    session.setdefault("enabled", True)
+    session["last_error"] = None
+    session["last_checked"] = datetime.now(timezone.utc).isoformat()
+
+    await redis_set_json(key, session)
 
 
 async def fetch_dialogs(session_str: str) -> list[dict]:

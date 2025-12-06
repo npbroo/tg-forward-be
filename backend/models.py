@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel
 
 
@@ -15,6 +17,9 @@ class SessionModel(BaseModel):
     label: str
     phone: str
     enabled: bool
+    valid: bool = True
+    last_error: Optional[str] = None
+    last_checked: Optional[str] = None
 
 
 class DialogModel(BaseModel):

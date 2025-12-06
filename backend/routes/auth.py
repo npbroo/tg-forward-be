@@ -51,7 +51,10 @@ async def auth_confirm(
         session_id=session_data["session_id"],
         label=session_data["label"],
         phone=session_data["phone"],
-        enabled=session_data["enabled"],
+        enabled=session_data.get("enabled", True),
+        valid=session_data.get("valid", True),
+        last_error=session_data.get("last_error"),
+        last_checked=session_data.get("last_checked"),
     )
 
 
@@ -84,4 +87,7 @@ async def auth_session(
         label=session["label"],
         phone=session["phone"],
         enabled=session.get("enabled", True),
+        valid=session.get("valid", True),
+        last_error=session.get("last_error"),
+        last_checked=session.get("last_checked"),
     )

@@ -1,15 +1,23 @@
 import asyncio
 import re
-from typing import Optional, Union, List, Dict
+from typing import Optional, Union, List, Dict, Tuple
 
 from telethon import TelegramClient, events
-from telethon.sessions import StringSession
+from telethon.errors import (
+    AuthKeyUnregisteredError,
+    SessionPasswordNeededError,
+    UserDeactivatedError,
+)
 from telethon.tl.types import User, Chat, Channel
 from telethon.tl.custom.dialog import Dialog
 
 from config import settings
 from shared.redis_client import redis_get_json, redis_scan_json, redis_client
-from telegram_session import TelegramSessionManager
+from telegram_session import (
+    TelegramSessionManager,
+    mark_session_checked_ok,
+    mark_session_invalid,
+)
 
 try:
     from solders.pubkey import Pubkey
@@ -75,23 +83,23 @@ def transform_message(text: str, transform_type: str) -> Optional[str]:
     return text
 
 
-async def load_default_session_str() -> str:
-    """Load the default Telegram session string from Redis."""
+async def load_default_session() -> Tuple[str, str, dict]:
+    """Load the default Telegram session metadata and string from Redis."""
     default = await redis_get_json("tg:session:default")
-    if not default or "session_id" not in default:
-        # fallback: first session
+    session: dict | None = None
+
+    if default and "session_id" in default:
+        session_id = default["session_id"]
+        session = await redis_get_json(f"tg:session:{session_id}")
+        if not session:
+            raise RuntimeError(f"Default session {session_id} not found in Redis")
+    else:
         sessions = await redis_scan_json("tg:session:sess_*")
         if not sessions:
             raise RuntimeError("No Telegram sessions found in Redis")
-        session_id = sessions[0]["session_id"]
-    else:
-        session_id = default["session_id"]
+        session = sessions[0]
 
-    session = await redis_get_json(f"tg:session:{session_id}")
-    if not session:
-        raise RuntimeError(f"Default session {session_id} not found in Redis")
-
-    return session["session_str"]
+    return session["session_id"], session["session_str"], session
 
 
 async def load_enabled_routes() -> List[Dict]:
@@ -149,7 +157,21 @@ async def run_forwarder_instance(shutdown_event: asyncio.Event):
     Run a single instance of the forwarder.
     Returns when shutdown_event is set or client disconnects.
     """
-    session_str = await load_default_session_str()
+    try:
+        session_id, session_str, session_data = await load_default_session()
+    except RuntimeError as e:
+        print(f"[FORWARDER] {e}")
+        return
+
+    if not session_data.get("enabled", True):
+        print(f"[FORWARDER] Default session {session_id} is disabled. Waiting for reset.")
+        return
+
+    if not session_data.get("valid", True):
+        reason = session_data.get("last_error") or "Session marked invalid"
+        print(f"[FORWARDER] Default session {session_id} invalid: {reason}")
+        return
+
     routes = await load_enabled_routes()
 
     if not routes:
@@ -226,17 +248,31 @@ async def run_forwarder_instance(shutdown_event: asyncio.Event):
             except Exception as e:
                 print(f"[ERROR] Failed to send message for route {rc['route_id']}: {repr(e)}")
 
-    await client.start()
-    me = await client.get_me()
-    print(f"Forwarder running as: {me.username or me.id}")
-
-    # Resolve target entities once using dialogs
-    await resolve_route_targets(client, route_configs)
-
-    # Wait for shutdown signal
     try:
-        await shutdown_event.wait()
-        print("[RELOAD] Shutdown signal received, disconnecting...")
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                await mark_session_invalid(session_id, "Session not authorized")
+                print("[FORWARDER] Session not authorized; marking invalid and stopping.")
+                return
+            await mark_session_checked_ok(session_id)
+        except (AuthKeyUnregisteredError, UserDeactivatedError, SessionPasswordNeededError) as e:
+            await mark_session_invalid(session_id, f"{type(e).__name__}: {e}")
+            print("[FORWARDER] Auth error; marking session invalid and stopping.")
+            return
+
+        me = await client.get_me()
+        print(f"Forwarder running as: {me.username or me.id}")
+
+        # Resolve target entities once using dialogs
+        await resolve_route_targets(client, route_configs)
+
+        # Wait for shutdown signal
+        try:
+            await shutdown_event.wait()
+            print("[RELOAD] Shutdown signal received, disconnecting...")
+        finally:
+            pass
     finally:
         await client.disconnect()
 

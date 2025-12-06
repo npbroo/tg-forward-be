@@ -43,6 +43,10 @@ async def get_dialogs(
             detail="Stored default session not found. Please login again using /auth/start and /auth/confirm"
         )
 
+    if not session.get("enabled", True) or not session.get("valid", True):
+        detail = session.get("last_error") or "Session is disabled or invalid. Please login again using /auth/start and /auth/confirm"
+        raise HTTPException(status_code=401, detail=detail)
+
     try:
         dialogs = await fetch_dialogs(session_str=session["session_str"])
         return [DialogModel(**d) for d in dialogs]
