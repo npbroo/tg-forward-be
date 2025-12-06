@@ -2,7 +2,7 @@ from fastapi import FastAPI, Header, HTTPException, Depends
 
 from shared.redis_client import redis_get_json, redis_set_json
 from config import settings
-from routes import auth, dialogs
+from routes import auth, dialogs, routing
 
 app = FastAPI()
 
@@ -38,3 +38,4 @@ async def redis_test(_: bool = Depends(require_admin)):
 # Include auth routes
 app.include_router(auth.router)
 app.include_router(dialogs.router)
+app.include_router(routing.router)
