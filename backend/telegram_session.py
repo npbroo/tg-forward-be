@@ -9,16 +9,16 @@ from telethon.sessions import StringSession
 from telethon.tl.types import User, Chat, Channel
 
 from config import settings
-from shared.redis_client import redis_set_json, redis_get_json, redis_scan_json, redis_client
-from shared.pubsub import notify_forwarder_reload
 from session_manager import EnhancedSessionManager, SessionRegistry
-from database import create_session, set_default_session
+from database import create_session
 
 
 async def start_login(phone: str) -> str:
     """
-    Start Telegram login: send code to phone, store temp session + phone_code_hash in Redis.
+    Start Telegram login: send code to phone, store temp session + phone_code_hash in database.
     """
+    from database import create_login_session
+
     manager = EnhancedSessionManager(session_str=None)
     client = manager.create_client()
     await client.connect()
@@ -30,13 +30,12 @@ async def start_login(phone: str) -> str:
     temp_session_str = client.session.save()
     login_id = str(uuid.uuid4())
 
-    await redis_set_json(
-        f"tg:login:{login_id}",
-        {
-            "phone": phone,
-            "session_str": temp_session_str,
-            "phone_code_hash": result.phone_code_hash,  # Store phone_code_hash
-        },
+    # Store in database
+    await create_login_session(
+        login_id=login_id,
+        phone=phone,
+        session_str=temp_session_str,
+        phone_code_hash=result.phone_code_hash
     )
 
     await client.disconnect()
@@ -45,17 +44,19 @@ async def start_login(phone: str) -> str:
 
 async def confirm_login(login_id: str, code: str, user_id: str = None) -> dict:
     """
-    Confirm login with the code, finalize session and store as tg:session:<session_id>.
+    Confirm login with the code, finalize session and store in database.
     Returns the stored session data.
     """
-    login_key = f"tg:login:{login_id}"
-    login_state = await redis_get_json(login_key)
+    from database import get_login_session, delete_login_session
+    from events import emit_session_created
+
+    login_state = await get_login_session(login_id)
     if not login_state:
         raise ValueError("Invalid or expired login_id")
 
-    phone = login_state["phone"]
-    temp_session_str = login_state["session_str"]
-    phone_code_hash = login_state["phone_code_hash"]  # Load phone_code_hash from Redis
+    phone = login_state.phone
+    temp_session_str = login_state.sessionStr
+    phone_code_hash = login_state.phoneCodeHash
 
     manager = EnhancedSessionManager(session_str=temp_session_str)
     client = manager.create_client()
@@ -65,7 +66,7 @@ async def confirm_login(login_id: str, code: str, user_id: str = None) -> dict:
     await client.sign_in(
         phone=phone,
         code=code,
-        phone_code_hash=phone_code_hash,  # Pass phone_code_hash to sign_in
+        phone_code_hash=phone_code_hash,
     )
 
     final_session_str = client.session.save()
@@ -86,7 +87,14 @@ async def confirm_login(login_id: str, code: str, user_id: str = None) -> dict:
         user_id=user_id
     )
 
-    # Also save to Redis for backward compatibility (if needed by other parts)
+    # Clean up the temporary login session
+    await delete_login_session(login_id)
+
+    # Emit session created event for the user's worker
+    if user_id:
+        await emit_session_created(user_id)
+
+    # Return session data
     current_ts = datetime.now(timezone.utc).isoformat()
     session_data = {
         "session_id": session_id,
@@ -99,30 +107,30 @@ async def confirm_login(login_id: str, code: str, user_id: str = None) -> dict:
         "last_checked": current_ts,
         "version": 1,
     }
-    await redis_set_json(f"tg:session:{session_id}", session_data)
-
-    # Set as default session in MySQL
-    await set_default_session(session_id)
-
-    # Also set in Redis for backward compatibility
-    await redis_set_json("tg:session:default", {"session_id": session_id})
-
-    # Notify forwarder to reload with new session
-    if user_id:
-        # Notify specific user's worker
-        await redis_client.publish("forwarder:user", f"session_created:{user_id}")
-    else:
-        # Legacy notification
-        await notify_forwarder_reload("session_created")
 
     return session_data
 
 
 async def list_sessions() -> list[dict]:
     """
-    Return all stored Telegram sessions from Redis.
+    Return all stored Telegram sessions from database.
     """
-    return await redis_scan_json("tg:session:*")
+    from database import list_sessions as db_list_sessions
+
+    sessions = await db_list_sessions()
+    return [
+        {
+            "session_id": s.sessionId,
+            "label": s.label,
+            "phone": s.phone,
+            "enabled": s.enabled,
+            "valid": s.valid,
+            "last_error": s.lastError,
+            "last_checked": s.lastChecked.isoformat() if s.lastChecked else None,
+            "version": s.version
+        }
+        for s in sessions
+    ]
 
 
 # For backward compatibility, maintain the original functions

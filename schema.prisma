@@ -57,11 +57,13 @@ model Route {
   @@map("routes")
 }
 
-model DefaultSession {
-  id        String   @id @default(uuid())
-  sessionId String   @unique @map("session_id")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+model LoginSession {
+  id            String   @id @default(uuid())
+  loginId       String   @unique @map("login_id")
+  phone         String
+  sessionStr    String   @map("session_str") @db.Text
+  phoneCodeHash String   @map("phone_code_hash")
+  createdAt     DateTime @default(now()) @map("created_at")
 
-  @@map("default_session")
+  @@map("login_sessions")
 }

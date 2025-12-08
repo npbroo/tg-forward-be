@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path
 
 from models import RouteCreateRequest, RouteUpdateRequest, RouteModel
 from database import create_route as db_create_route, get_route, update_route as db_update_route, delete_route as db_delete_route, list_routes as db_list_routes
-from shared.pubsub import notify_forwarder_reload
+from events import emit_route_change
 from auth_jwt import get_current_admin
 
 router = APIRouter(prefix="/routes", tags=["routes"])
@@ -21,7 +21,7 @@ async def create_route(
         transform_type=body.transform_type,
         enabled=body.enabled
     )
-    await notify_forwarder_reload("route_created")
+    await emit_route_change()
     return RouteModel(
         route_id=route.routeId,
         source_chat=route.sourceChat,
@@ -66,7 +66,7 @@ async def update_route(
         update_data["targetChat"] = str(body.target_chat)
 
     route = await db_update_route(route_id, update_data)
-    await notify_forwarder_reload("route_updated")
+    await emit_route_change()
     return RouteModel(
         route_id=route.routeId,
         source_chat=route.sourceChat,
@@ -86,6 +86,6 @@ async def delete_route(
         raise HTTPException(status_code=404, detail="Route not found")
 
     await db_delete_route(route_id)
-    await notify_forwarder_reload("route_deleted")
+    await emit_route_change()
 
     return {"ok": True}

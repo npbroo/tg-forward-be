@@ -27,13 +27,14 @@ from telethon.errors import (
 )
 
 from config import settings
-from shared.redis_client import redis_get_json, redis_scan_json, redis_client
 from session_manager import (
     EnhancedSessionManager,
     SessionRegistry,
     SessionErrorType,
 )
 from target_resolver import TargetResolver
+from database import list_routes
+from events import event_emitter, EventType
 
 try:
     from solders.pubkey import Pubkey
@@ -132,21 +133,40 @@ class EnhancedForwarder:
         self.session_error_counts: Dict[str, int] = {}
 
     async def load_enabled_routes(self) -> List[Dict]:
-        """Load all enabled routes from Redis."""
-        routes = await redis_scan_json("tg:route:route_*")
-        return [r for r in routes if r.get("enabled", True)]
+        """Load all enabled routes from database."""
+        routes = await list_routes(enabled_only=True)
+        return [
+            {
+                "route_id": r.routeId,
+                "source_chat": r.sourceChat,
+                "target_chat": r.targetChat,
+                "transform_type": r.transformType,
+                "enabled": r.enabled
+            }
+            for r in routes
+        ]
 
     async def run_forwarder(self):
-        """Main forwarder worker loop with Redis pub/sub reload support."""
-        pubsub = redis_client.pubsub()
-        await pubsub.subscribe("forwarder:reload", "forwarder:control")
-        print(f"[PUBSUB] Subscribed to forwarder channels")
+        """Main forwarder worker loop with event-based reload support."""
+        # Event flag for route reload requests
+        reload_event = asyncio.Event()
+
+        # Register event listener for route changes
+        async def on_route_change(data):
+            print(f"[EVENT] Route change detected, triggering reload...")
+            reload_event.set()
+
+        # Subscribe to route change events
+        event_emitter.on(EventType.ROUTE_CREATED, on_route_change)
+        event_emitter.on(EventType.ROUTE_UPDATED, on_route_change)
+        event_emitter.on(EventType.ROUTE_DELETED, on_route_change)
+
+        print(f"[EVENT] Subscribed to route change events")
 
         # Check if there are any sessions available initially
         if not await SessionRegistry.is_session_available():
-            print("[FORWARDER] No healthy sessions available, waiting for session creation...")
-            # Wait for session creation signal
-            await self.wait_for_session_creation(pubsub)
+            print("[FORWARDER] No healthy sessions available, cannot start forwarder")
+            return
 
         while True:
             # Calculate dynamic backoff based on failure count
@@ -161,27 +181,16 @@ class EnhancedForwarder:
 
             # Create shutdown event for this instance
             self.shutdown_event = asyncio.Event()
+            reload_event.clear()
 
             # Start forwarder instance
             forwarder_task = asyncio.create_task(self.run_forwarder_instance())
 
             # Listen for reload signals
             async def listen_for_signals():
-                async for message in pubsub.listen():
-                    if message["type"] == "message":
-                        channel = message["channel"]
-                        reason = message["data"].decode() if isinstance(message["data"], bytes) else message["data"]
-                        
-                        print(f"[SIGNAL] Received {channel} with reason: {reason}")
-                        
-                        if channel == "forwarder:control" and reason == ForwarderEventType.SHUTDOWN_REQUESTED.value:
-                            print("[SHUTDOWN] Shutdown requested, stopping forwarder...")
-                            self.shutdown_event.set()
-                            break
-                        else:
-                            print(f"[RELOAD] Received reload signal: {reason}")
-                            self.shutdown_event.set()
-                            break
+                await reload_event.wait()
+                print(f"[RELOAD] Received reload signal, restarting forwarder...")
+                self.shutdown_event.set()
 
             signal_listener = asyncio.create_task(listen_for_signals())
 
@@ -218,38 +227,18 @@ class EnhancedForwarder:
                 print("[RELOAD] Restarting forwarder with new configuration...")
                 await asyncio.sleep(1)  # Brief pause before restart
 
-    async def wait_for_session_creation(self, pubsub):
-        """Wait for a session creation signal before proceeding."""
-        print("[WAIT] Waiting for session creation signal...")
-        async for message in pubsub.listen():
-            if (message["type"] == "message" and 
-                message["channel"] == "forwarder:reload" and
-                (ForwarderEventType.SESSION_CREATED.value in str(message["data"]) or
-                 ForwarderEventType.SESSION_ADDED.value in str(message["data"]))):
-                print("[WAIT] Session created signal received, proceeding...")
-                return
-
     async def run_forwarder_instance(self):
         """
         Run a single instance of the forwarder.
         Returns when shutdown_event is set or client disconnects.
         """
         self.is_running = True
-        
+
         try:
             session_id, session_str, session_data = await self.load_preferred_session()
         except RuntimeError as e:
             print(f"[FORWARDER] {e}")
             return
-
-        # Try to acquire session lock
-        lock_id = await SessionRegistry.acquire_session_lock(session_id)
-        if not lock_id:
-            print(f"[FORWARDER] Session {session_id} is already locked by another instance, exiting...")
-            return
-        
-        self.session_lock_id = lock_id
-        print(f"[FORWARDER] Acquired lock for session {session_id}")
 
         # Initialize client and resolver
         manager = EnhancedSessionManager(session_str=session_str)
@@ -352,12 +341,6 @@ class EnhancedForwarder:
                 except Exception as e:
                     print(f"[CLEANUP] Error disconnecting client: {e}")
                 self.active_client = None
-
-            # Release session lock
-            if self.session_lock_id:
-                await SessionRegistry.release_session_lock(session_id, self.session_lock_id)
-                print(f"[FORWARDER] Released lock for session {session_id}")
-                self.session_lock_id = None
 
             self.is_running = False
             print("[FORWARDER] Instance cleanup completed")

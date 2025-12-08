@@ -10,7 +10,6 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore"  # Ignore extra fields from .env file
     )
-    REDIS_URL: str
     DATABASE_URL: str
 
     TG_API_ID: int

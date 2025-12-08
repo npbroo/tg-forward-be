@@ -7,6 +7,7 @@ from typing import Optional
 from enhanced_forwarder import EnhancedForwarder
 from database import get_user_by_id, get_session
 from session_manager import SessionRegistry
+from events import event_emitter, EventType
 
 
 class UserForwarderWorker:
@@ -21,6 +22,8 @@ class UserForwarderWorker:
         self.forwarder: Optional[EnhancedForwarder] = None
         self.worker_task: Optional[asyncio.Task] = None
         self.shutdown_event = asyncio.Event()
+        self.session_created_event = asyncio.Event()
+        self.session_invalidated_event = asyncio.Event()
         self.is_running = False
 
     async def start(self):
@@ -32,6 +35,21 @@ class UserForwarderWorker:
         print(f"[USER-WORKER:{self.username}] Starting worker for user {self.user_id}")
         self.is_running = True
         self.shutdown_event.clear()
+
+        # Register event listeners for this user
+        async def on_session_created(data):
+            print(f"[USER-WORKER:{self.username}] Session created event received")
+            self.session_created_event.set()
+
+        async def on_session_invalidated(data):
+            print(f"[USER-WORKER:{self.username}] Session invalidated event received")
+            self.session_invalidated_event.set()
+            # Stop the forwarder if running
+            if self.forwarder and self.forwarder.shutdown_event:
+                self.forwarder.shutdown_event.set()
+
+        event_emitter.on_user(EventType.SESSION_CREATED, self.user_id, on_session_created)
+        event_emitter.on_user(EventType.SESSION_INVALIDATED, self.user_id, on_session_invalidated)
 
         # Start the worker task
         self.worker_task = asyncio.create_task(self._run_worker())
@@ -60,7 +78,7 @@ class UserForwarderWorker:
 
     async def _run_worker(self):
         """
-        Main worker loop. Continuously tries to run forwarder if user has a valid session.
+        Main worker loop. Waits for session events and manages forwarder lifecycle.
         """
         try:
             while not self.shutdown_event.is_set():
@@ -68,21 +86,33 @@ class UserForwarderWorker:
                 session = await self._get_user_session()
 
                 if not session:
-                    print(f"[USER-WORKER:{self.username}] No valid session found, waiting...")
-                    # Wait for session to be created (with periodic checks)
-                    try:
-                        await asyncio.wait_for(self.shutdown_event.wait(), timeout=30.0)
+                    print(f"[USER-WORKER:{self.username}] No valid session found, waiting for session creation...")
+                    # Wait for session creation event or shutdown
+                    self.session_created_event.clear()
+                    done, pending = await asyncio.wait(
+                        [
+                            asyncio.create_task(self.session_created_event.wait()),
+                            asyncio.create_task(self.shutdown_event.wait())
+                        ],
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                    # Cancel pending tasks
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+
+                    if self.shutdown_event.is_set():
                         break  # Shutdown requested
-                    except asyncio.TimeoutError:
-                        continue  # Check again for session
+                    continue  # Session created, loop to start forwarder
 
                 # Create and run forwarder instance
                 print(f"[USER-WORKER:{self.username}] Starting forwarder with session {session.sessionId}")
                 self.forwarder = EnhancedForwarder()
 
                 # Override the load_preferred_session to use this user's session
-                original_load_session = self.forwarder.load_preferred_session
-
                 async def load_user_session():
                     # Get fresh session data
                     fresh_session = await self._get_user_session()
@@ -102,7 +132,7 @@ class UserForwarderWorker:
                 self.forwarder.load_preferred_session = load_user_session
 
                 try:
-                    # Run the forwarder
+                    # Run the forwarder (will run until shutdown or session invalidated)
                     await self.forwarder.run_forwarder()
                 except Exception as e:
                     print(f"[USER-WORKER:{self.username}] Forwarder error: {e}")
@@ -112,6 +142,12 @@ class UserForwarderWorker:
                         break  # Shutdown requested
                     except asyncio.TimeoutError:
                         continue  # Retry
+
+                # Check if session was invalidated
+                if self.session_invalidated_event.is_set():
+                    print(f"[USER-WORKER:{self.username}] Session invalidated, waiting for new session...")
+                    self.session_invalidated_event.clear()
+                    continue  # Loop back to wait for new session
 
         except asyncio.CancelledError:
             print(f"[USER-WORKER:{self.username}] Worker cancelled")

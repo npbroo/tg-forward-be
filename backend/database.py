@@ -3,7 +3,7 @@ Database service layer using Prisma ORM for MySQL.
 """
 from typing import Optional, List
 from prisma import Prisma
-from prisma.models import User, Session, Route, DefaultSession
+from prisma.models import User, Session, Route, LoginSession
 
 # Global Prisma client instance
 db = Prisma()
@@ -167,22 +167,24 @@ async def list_routes(enabled_only: bool = False) -> List[Route]:
     return await db.route.find_many()
 
 
-# Default session operations
-async def get_default_session() -> Optional[DefaultSession]:
-    """Get the default session setting."""
-    sessions = await db.defaultsession.find_many()
-    return sessions[0] if sessions else None
+# LoginSession operations (for temporary Telegram login process)
+async def create_login_session(login_id: str, phone: str, session_str: str, phone_code_hash: str) -> LoginSession:
+    """Create a temporary login session."""
+    return await db.loginsession.create(
+        data={
+            "loginId": login_id,
+            "phone": phone,
+            "sessionStr": session_str,
+            "phoneCodeHash": phone_code_hash
+        }
+    )
 
 
-async def set_default_session(session_id: str) -> DefaultSession:
-    """Set or update the default session."""
-    existing = await get_default_session()
-    if existing:
-        return await db.defaultsession.update(
-            where={"id": existing.id},
-            data={"sessionId": session_id}
-        )
-    else:
-        return await db.defaultsession.create(
-            data={"sessionId": session_id}
-        )
+async def get_login_session(login_id: str) -> Optional[LoginSession]:
+    """Get a login session by login_id."""
+    return await db.loginsession.find_unique(where={"loginId": login_id})
+
+
+async def delete_login_session(login_id: str) -> Optional[LoginSession]:
+    """Delete a login session."""
+    return await db.loginsession.delete(where={"loginId": login_id})

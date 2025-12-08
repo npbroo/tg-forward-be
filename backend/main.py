@@ -6,7 +6,6 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import connect_db, disconnect_db
-from shared.redis_client import redis_get_json, redis_set_json
 from routes import auth, dialogs, routing, users
 from forwarder_manager import start_forwarder_manager, stop_forwarder_manager
 from auth_jwt import get_current_admin
@@ -57,20 +56,6 @@ async def health():
 @app.get("/protected")
 async def protected(admin: str = Depends(get_current_admin)):
     return {"message": f"You are authorized as {admin}"}
-
-@app.get("/redis-test")
-async def redis_test(_: str = Depends(get_current_admin)):
-    """
-    Simple Redis round-trip test.
-    Writes a key and reads it back.
-    """
-    key = "test:hello"
-    value = {"msg": "world"}
-
-    await redis_set_json(key, value)
-    read_back = await redis_get_json(key)
-
-    return {"written": value, "read_back": read_back}
 
 
 # Include routers

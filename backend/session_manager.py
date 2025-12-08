@@ -21,11 +21,9 @@ from telethon.errors import (
 
 from config import settings
 from database import (
-    get_session, update_session, get_valid_sessions,
-    get_default_session, db
+    get_session, update_session, get_valid_sessions, db
 )
-from shared.redis_client import redis_client  # Keep for locking only
-from shared.pubsub import notify_forwarder_reload
+from events import emit_session_invalidated
 
 
 class SessionStatus(Enum):
@@ -106,63 +104,8 @@ class SessionRegistry:
         await update_session(session_id, {"version": new_version})
         return new_version
 
-    @staticmethod
-    async def acquire_session_lock(session_id: str, lock_duration: int = 30) -> Optional[str]:
-        """
-        Acquire a lock for a session to prevent concurrent access.
-        
-        Args:
-            session_id: ID of the session to lock
-            lock_duration: Duration in seconds for the lock
-            
-        Returns:
-            lock_id if successful, None if already locked
-        """
-        lock_key = f"tg:session:lock:{session_id}"
-        lock_id = str(uuid.uuid4())
-        
-        from shared.redis_client import redis_client
-        # Use Redis SET with NX (only set if not exists) and EX (expire)
-        result = await redis_client.set(
-            lock_key,
-            lock_id,
-            nx=True,  # Only set if key doesn't exist
-            ex=lock_duration  # Expire after duration seconds
-        )
-        
-        return lock_id if result else None
-
-    @staticmethod
-    async def release_session_lock(session_id: str, lock_id: str) -> bool:
-        """
-        Release a session lock using the lock ID.
-        
-        Args:
-            session_id: ID of the session to unlock
-            lock_id: The lock ID returned when acquiring the lock
-            
-        Returns:
-            True if successfully released, False otherwise
-        """
-        from shared.redis_client import redis_client
-        lock_key = f"tg:session:lock:{session_id}"
-        
-        # Lua script to atomically check and delete the lock
-        lua_script = """
-        if redis.call("GET", KEYS[1]) == ARGV[1] then
-            return redis.call("DEL", KEYS[1])
-        else
-            return 0
-        end
-        """
-        
-        result = await redis_client.eval(
-            lua_script, 
-            keys=[lock_key], 
-            args=[lock_id]
-        )
-        
-        return result == 1
+    # Note: Session locking removed - using database row-level locking if needed
+    # For concurrent access control, use MySQL SELECT ... FOR UPDATE
 
     @staticmethod
     async def mark_session_invalid(session_id: str, reason: str, error_type: SessionErrorType = SessionErrorType.AUTH_ERROR):
@@ -179,7 +122,10 @@ class SessionRegistry:
             "lastChecked": datetime.now(timezone.utc),
             "version": session.version + 1
         })
-        await notify_forwarder_reload("session_invalidated")
+
+        # Emit session invalidated event for the user's worker
+        if session.userId:
+            await emit_session_invalidated(session.userId)
 
     @staticmethod
     async def mark_session_checked_ok(session_id: str):
@@ -200,31 +146,8 @@ class SessionRegistry:
     @staticmethod
     async def get_healthy_session() -> Tuple[Optional[str], Optional[str], Optional[dict]]:
         """
-        Get the best available healthy session.
-        Prioritizes default session, then falls back to other valid sessions.
+        Get the best available healthy session from all valid sessions.
         """
-        # First try the default session
-        default = await get_default_session()
-        if default and default.sessionId:
-            session = await get_session(default.sessionId)
-
-            if session and session.enabled and session.valid:
-                # Verify session is actually usable
-                manager = EnhancedSessionManager(session_str=session.sessionStr)
-                is_healthy, _ = await manager.is_session_healthy(session.sessionStr)
-
-                if is_healthy:
-                    return session.sessionId, session.sessionStr, {
-                        "session_id": session.sessionId,
-                        "session_str": session.sessionStr,
-                        "label": session.label,
-                        "phone": session.phone,
-                        "enabled": session.enabled,
-                        "valid": session.valid,
-                        "version": session.version
-                    }
-
-        # Fallback to other valid sessions
         sessions = await get_valid_sessions()
         for session in sessions:
             manager = EnhancedSessionManager(session_str=session.sessionStr)

@@ -9,7 +9,6 @@ from models import (
     LoginResponse,
 )
 from telegram_session import start_login, confirm_login
-from shared.redis_client import redis_get_json
 from auth_jwt import get_current_admin, login as jwt_login
 from database import get_user_by_username
 
@@ -68,36 +67,4 @@ async def auth_confirm(
     )
 
 
-@router.get("/session", response_model=SessionModel)
-async def auth_session(
-    _: str = Depends(get_current_admin),
-):
-    """
-    Get the default Telegram session.
-    """
-    default = await redis_get_json("tg:session:default")
-
-    if not default or "session_id" not in default:
-        raise HTTPException(
-            status_code=404,
-            detail="No default session found. Please login using /auth/start and /auth/confirm"
-        )
-
-    session_id = default["session_id"]
-    session = await redis_get_json(f"tg:session:{session_id}")
-
-    if not session:
-        raise HTTPException(
-            status_code=404,
-            detail="Default session not found in storage. Please login again using /auth/start and /auth/confirm"
-        )
-
-    return SessionModel(
-        session_id=session["session_id"],
-        label=session["label"],
-        phone=session["phone"],
-        enabled=session.get("enabled", True),
-        valid=session.get("valid", True),
-        last_error=session.get("last_error"),
-        last_checked=session.get("last_checked"),
-    )
+# Note: /auth/session endpoint removed - use /sessions to list all sessions for the user

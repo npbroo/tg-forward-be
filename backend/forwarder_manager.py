@@ -5,7 +5,7 @@ import asyncio
 from typing import Dict
 from user_forwarder import UserForwarderWorker
 from database import list_users
-from shared.redis_client import redis_client
+from events import event_emitter, EventType
 
 
 class ForwarderManager:
@@ -16,7 +16,6 @@ class ForwarderManager:
     def __init__(self):
         self.workers: Dict[str, UserForwarderWorker] = {}  # user_id -> worker
         self.is_running = False
-        self.pubsub_task: asyncio.Task = None
 
     async def start(self):
         """Start the forwarder manager and spawn workers for all users."""
@@ -27,11 +26,25 @@ class ForwarderManager:
         print("[FORWARDER-MANAGER] Starting forwarder manager")
         self.is_running = True
 
+        # Register event listeners for user creation/deletion
+        async def on_user_created(data):
+            user_id = data.get("user_id")
+            username = data.get("username")
+            if user_id and username:
+                print(f"[FORWARDER-MANAGER] User created: {username}")
+                await self._spawn_worker(user_id, username)
+
+        async def on_user_deleted(data):
+            user_id = data.get("user_id")
+            if user_id:
+                print(f"[FORWARDER-MANAGER] User deleted: {user_id}")
+                await self._stop_worker(user_id)
+
+        event_emitter.on(EventType.USER_CREATED, on_user_created)
+        event_emitter.on(EventType.USER_DELETED, on_user_deleted)
+
         # Spawn workers for all existing users
         await self._spawn_all_workers()
-
-        # Start listening for reload signals
-        self.pubsub_task = asyncio.create_task(self._listen_for_signals())
 
         print(f"[FORWARDER-MANAGER] Started with {len(self.workers)} workers")
 
@@ -42,14 +55,6 @@ class ForwarderManager:
 
         print("[FORWARDER-MANAGER] Stopping forwarder manager")
         self.is_running = False
-
-        # Stop pubsub listener
-        if self.pubsub_task:
-            self.pubsub_task.cancel()
-            try:
-                await self.pubsub_task
-            except asyncio.CancelledError:
-                pass
 
         # Stop all workers
         await self._stop_all_workers()
@@ -91,74 +96,6 @@ class ForwarderManager:
             await worker.stop()
             del self.workers[user_id]
             print(f"[FORWARDER-MANAGER] Stopped worker for user {user_id}")
-
-    async def _reload_worker(self, user_id: str):
-        """Reload a specific worker."""
-        worker = self.workers.get(user_id)
-        if worker:
-            await worker.reload()
-            print(f"[FORWARDER-MANAGER] Reloaded worker for user {user_id}")
-
-    async def _reload_all_workers(self):
-        """Reload all workers (e.g., when routes change)."""
-        print(f"[FORWARDER-MANAGER] Reloading all {len(self.workers)} workers")
-
-        reload_tasks = [worker.reload() for worker in self.workers.values()]
-        if reload_tasks:
-            await asyncio.gather(*reload_tasks, return_exceptions=True)
-
-    async def _listen_for_signals(self):
-        """Listen for reload/control signals from Redis pub/sub."""
-        pubsub = redis_client.pubsub()
-        await pubsub.subscribe("forwarder:reload", "forwarder:control", "forwarder:user")
-
-        print("[FORWARDER-MANAGER] Listening for signals")
-
-        try:
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue
-
-                channel = message["channel"]
-                data = message["data"].decode() if isinstance(message["data"], bytes) else message["data"]
-
-                print(f"[FORWARDER-MANAGER] Received signal on {channel}: {data}")
-
-                if channel == "forwarder:control":
-                    if data == "shutdown":
-                        print("[FORWARDER-MANAGER] Shutdown signal received")
-                        break
-                    elif data == "reload_all":
-                        await self._reload_all_workers()
-
-                elif channel == "forwarder:reload":
-                    # General reload signal (routes changed, etc.)
-                    await self._reload_all_workers()
-
-                elif channel == "forwarder:user":
-                    # User-specific signals: "user_created:<user_id>", "user_deleted:<user_id>", "session_created:<user_id>"
-                    if data.startswith("user_created:"):
-                        user_id = data.split(":", 1)[1]
-                        # Fetch user from database and spawn worker
-                        from database import get_user_by_id
-                        user = await get_user_by_id(user_id)
-                        if user:
-                            await self._spawn_worker(user.id, user.username)
-
-                    elif data.startswith("user_deleted:"):
-                        user_id = data.split(":", 1)[1]
-                        await self._stop_worker(user_id)
-
-                    elif data.startswith("session_created:") or data.startswith("session_updated:"):
-                        # Reload the specific user's worker when their session changes
-                        user_id = data.split(":", 1)[1]
-                        await self._reload_worker(user_id)
-
-        except asyncio.CancelledError:
-            print("[FORWARDER-MANAGER] Signal listener cancelled")
-        finally:
-            await pubsub.unsubscribe()
-            await pubsub.close()
 
 
 # Global manager instance
