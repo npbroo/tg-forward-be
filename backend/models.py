@@ -3,6 +3,18 @@ from typing import Optional
 from pydantic import BaseModel
 
 
+class UserCreateRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UserModel(BaseModel):
+    id: str
+    username: str
+    created_at: str
+    updated_at: str
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -11,6 +23,10 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class StartLoginRequest(BaseModel):
+    phone: str
 
 
 class StartLoginResponse(BaseModel):

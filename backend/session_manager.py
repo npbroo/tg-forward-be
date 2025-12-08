@@ -20,7 +20,11 @@ from telethon.errors import (
 )
 
 from config import settings
-from shared.redis_client import redis_get_json, redis_set_json, redis_scan_json, redis_client
+from database import (
+    get_session, update_session, get_valid_sessions,
+    get_default_session, db
+)
+from shared.redis_client import redis_client  # Keep for locking only
 from shared.pubsub import notify_forwarder_reload
 
 
@@ -88,19 +92,18 @@ class SessionRegistry:
     @staticmethod
     async def get_session_version(session_id: str) -> Optional[int]:
         """Get the current version of a session."""
-        session = await redis_get_json(f"tg:session:{session_id}")
-        return session.get("version", 0) if session else None
+        session = await get_session(session_id)
+        return session.version if session else None
 
     @staticmethod
     async def increment_session_version(session_id: str) -> int:
         """Increment session version to invalidate cached references."""
-        session = await redis_get_json(f"tg:session:{session_id}")
+        session = await get_session(session_id)
         if not session:
             return 0
-            
-        new_version = session.get("version", 0) + 1
-        session["version"] = new_version
-        await redis_set_json(f"tg:session:{session_id}", session)
+
+        new_version = session.version + 1
+        await update_session(session_id, {"version": new_version})
         return new_version
 
     @staticmethod
@@ -164,39 +167,35 @@ class SessionRegistry:
     @staticmethod
     async def mark_session_invalid(session_id: str, reason: str, error_type: SessionErrorType = SessionErrorType.AUTH_ERROR):
         """Mark the given session as invalid/disabled with error metadata."""
-        key = f"tg:session:{session_id}"
-        session = await redis_get_json(key)
+        session = await get_session(session_id)
         if not session:
             return
 
-        session["enabled"] = False
-        session["valid"] = False
-        session["last_error"] = reason
-        session["error_type"] = error_type.value
-        session["last_checked"] = datetime.now(timezone.utc).isoformat()
-
-        # Increment version to indicate this session is now invalid
-        session["version"] = session.get("version", 0) + 1
-
-        await redis_set_json(key, session)
+        await update_session(session_id, {
+            "enabled": False,
+            "valid": False,
+            "lastError": reason,
+            "errorType": error_type.value,
+            "lastChecked": datetime.now(timezone.utc),
+            "version": session.version + 1
+        })
         await notify_forwarder_reload("session_invalidated")
 
     @staticmethod
     async def mark_session_checked_ok(session_id: str):
         """Refresh metadata when a session is healthy."""
-        key = f"tg:session:{session_id}"
-        session = await redis_get_json(key)
+        session = await get_session(session_id)
         if not session:
             return
 
-        session["valid"] = True
-        session.setdefault("enabled", True)
-        session["last_error"] = None
-        session["error_type"] = None
-        session["last_checked"] = datetime.now(timezone.utc).isoformat()
-        session["last_activity"] = datetime.now(timezone.utc).isoformat()
-
-        await redis_set_json(key, session)
+        await update_session(session_id, {
+            "valid": True,
+            "enabled": True,
+            "lastError": None,
+            "errorType": None,
+            "lastChecked": datetime.now(timezone.utc),
+            "lastActivity": datetime.now(timezone.utc)
+        })
 
     @staticmethod
     async def get_healthy_session() -> Tuple[Optional[str], Optional[str], Optional[dict]]:
@@ -205,35 +204,42 @@ class SessionRegistry:
         Prioritizes default session, then falls back to other valid sessions.
         """
         # First try the default session
-        default = await redis_get_json("tg:session:default")
-        if default and "session_id" in default:
-            session_id = default["session_id"]
-            session = await redis_get_json(f"tg:session:{session_id}")
-            
-            if (session and 
-                session.get("enabled", True) and 
-                session.get("valid", True)):
-                
-                # Verify session is actually usable
-                manager = EnhancedSessionManager(session_str=session["session_str"])
-                is_healthy, _ = await manager.is_session_healthy(session["session_str"])
-                
-                if is_healthy:
-                    return session_id, session["session_str"], session
+        default = await get_default_session()
+        if default and default.sessionId:
+            session = await get_session(default.sessionId)
 
-        # Fallback to other valid sessions 
-        sessions = await redis_scan_json("tg:session:sess_*")
-        for candidate_session in sessions:
-            if (candidate_session.get("enabled", True) and 
-                candidate_session.get("valid", True)):
-                
-                manager = EnhancedSessionManager(session_str=candidate_session["session_str"])
-                is_healthy, _ = await manager.is_session_healthy(candidate_session["session_str"])
-                
+            if session and session.enabled and session.valid:
+                # Verify session is actually usable
+                manager = EnhancedSessionManager(session_str=session.sessionStr)
+                is_healthy, _ = await manager.is_session_healthy(session.sessionStr)
+
                 if is_healthy:
-                    return (candidate_session["session_id"], 
-                           candidate_session["session_str"], 
-                           candidate_session)
+                    return session.sessionId, session.sessionStr, {
+                        "session_id": session.sessionId,
+                        "session_str": session.sessionStr,
+                        "label": session.label,
+                        "phone": session.phone,
+                        "enabled": session.enabled,
+                        "valid": session.valid,
+                        "version": session.version
+                    }
+
+        # Fallback to other valid sessions
+        sessions = await get_valid_sessions()
+        for session in sessions:
+            manager = EnhancedSessionManager(session_str=session.sessionStr)
+            is_healthy, _ = await manager.is_session_healthy(session.sessionStr)
+
+            if is_healthy:
+                return (session.sessionId, session.sessionStr, {
+                    "session_id": session.sessionId,
+                    "session_str": session.sessionStr,
+                    "label": session.label,
+                    "phone": session.phone,
+                    "enabled": session.enabled,
+                    "valid": session.valid,
+                    "version": session.version
+                })
 
         return None, None, None
 

@@ -11,6 +11,7 @@ class Settings(BaseSettings):
         extra="ignore"  # Ignore extra fields from .env file
     )
     REDIS_URL: str
+    DATABASE_URL: str
 
     TG_API_ID: int
     TG_API_HASH: str

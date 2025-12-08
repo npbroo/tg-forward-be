@@ -1,0 +1,67 @@
+// Prisma schema for Telegram forwarder backend
+
+generator client {
+  provider             = "prisma-client-py"
+  recursive_type_depth = 5
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  password  String   // Hashed password
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  sessions Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id           String    @id @default(uuid())
+  sessionId    String    @unique @map("session_id")
+  sessionStr   String    @map("session_str") @db.Text
+  label        String
+  phone        String
+  enabled      Boolean   @default(true)
+  valid        Boolean   @default(true)
+  version      Int       @default(0)
+  lastError    String?   @map("last_error") @db.Text
+  errorType    String?   @map("error_type")
+  lastChecked  DateTime? @map("last_checked")
+  lastActivity DateTime? @map("last_activity")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  userId String? @map("user_id")
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("sessions")
+}
+
+model Route {
+  id            String   @id @default(uuid())
+  routeId       String   @unique @map("route_id")
+  sourceChat    String   @map("source_chat")
+  targetChat    String   @map("target_chat")
+  transformType String   @map("transform_type") @default("solana_ca")
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("routes")
+}
+
+model DefaultSession {
+  id        String   @id @default(uuid())
+  sessionId String   @unique @map("session_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("default_session")
+}

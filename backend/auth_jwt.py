@@ -10,6 +10,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from config import settings
 from models import LoginRequest, LoginResponse
+from database import get_user_by_username
+from password_utils import verify_password
 
 
 security = HTTPBearer()
@@ -93,7 +95,7 @@ def create_access_token(subject: str, expires_minutes: int | None = None) -> str
 async def get_current_admin(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
-    """Validate the provided bearer token and return the admin username."""
+    """Validate the provided bearer token and return the username."""
     token = credentials.credentials
     try:
         payload = decode_jwt(token)
@@ -103,22 +105,37 @@ async def get_current_admin(
             detail="Invalid authentication token",
         )
 
-    subject = payload.get("sub")
-    if subject != settings.ADMIN_USERNAME:
+    username = payload.get("sub")
+    if not username:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authorized",
+            detail="Invalid token payload",
         )
 
-    return subject
+    # Verify user exists in database
+    user = await get_user_by_username(username)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+
+    return username
 
 
 async def login(body: LoginRequest) -> LoginResponse:
     """Validate credentials and return a JWT access token."""
-    if (
-        body.username != settings.ADMIN_USERNAME
-        or body.password != settings.ADMIN_PASSWORD
-    ):
+    # Get user from database
+    user = await get_user_by_username(body.username)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+        )
+
+    # Verify password
+    if not verify_password(body.password, user.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",

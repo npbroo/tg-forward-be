@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from models import (
+    StartLoginRequest,
     StartLoginResponse,
     ConfirmLoginRequest,
     SessionModel,
@@ -9,8 +10,8 @@ from models import (
 )
 from telegram_session import start_login, confirm_login
 from shared.redis_client import redis_get_json
-from config import settings
 from auth_jwt import get_current_admin, login as jwt_login
+from database import get_user_by_username
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -21,33 +22,38 @@ async def auth_login(body: LoginRequest):
     return await jwt_login(body)
 
 
-@router.get("/start", response_model=StartLoginResponse)
+@router.post("/start", response_model=StartLoginResponse)
 async def auth_start(
+    body: StartLoginRequest,
     _: str = Depends(get_current_admin),
 ):
     """
-    Start Telegram login using the phone configured in the environment.
+    Start Telegram login using the provided phone number.
     Returns login_id to be used with /auth/confirm.
     """
-    phone = settings.TG_PHONE
+    if not body.phone:
+        raise HTTPException(status_code=400, detail="Phone number is required")
 
-    if not phone:
-        raise HTTPException(status_code=500, detail="Missing TG_PHONE configuration")
-
-    login_id = await start_login(phone)
+    login_id = await start_login(body.phone)
     return StartLoginResponse(login_id=login_id)
 
 
 @router.post("/confirm", response_model=SessionModel)
 async def auth_confirm(
     body: ConfirmLoginRequest,
-    _: str = Depends(get_current_admin),
+    username: str = Depends(get_current_admin),
 ):
     """
     Confirm Telegram login using login_id + code, store final session.
+    Associates the session with the authenticated user.
     """
+    # Get the current user's ID
+    user = await get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
     try:
-        session_data = await confirm_login(body.login_id, body.code)
+        session_data = await confirm_login(body.login_id, body.code, user_id=user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

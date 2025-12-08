@@ -9,9 +9,10 @@ from telethon.sessions import StringSession
 from telethon.tl.types import User, Chat, Channel
 
 from config import settings
-from shared.redis_client import redis_set_json, redis_get_json, redis_scan_json
+from shared.redis_client import redis_set_json, redis_get_json, redis_scan_json, redis_client
 from shared.pubsub import notify_forwarder_reload
 from session_manager import EnhancedSessionManager, SessionRegistry
+from database import create_session, set_default_session
 
 
 async def start_login(phone: str) -> str:
@@ -42,7 +43,7 @@ async def start_login(phone: str) -> str:
     return login_id
 
 
-async def confirm_login(login_id: str, code: str) -> dict:
+async def confirm_login(login_id: str, code: str, user_id: str = None) -> dict:
     """
     Confirm login with the code, finalize session and store as tg:session:<session_id>.
     Returns the stored session data.
@@ -72,26 +73,47 @@ async def confirm_login(login_id: str, code: str) -> dict:
     await client.disconnect()
 
     session_id = f"sess_{uuid.uuid4().hex}"
+    label = me.username or phone
+
+    # Save to MySQL database
+    session = await create_session(
+        session_id=session_id,
+        session_str=final_session_str,
+        label=label,
+        phone=phone,
+        enabled=True,
+        valid=True,
+        user_id=user_id
+    )
+
+    # Also save to Redis for backward compatibility (if needed by other parts)
     current_ts = datetime.now(timezone.utc).isoformat()
     session_data = {
         "session_id": session_id,
-        "label": me.username or phone,
+        "label": label,
         "phone": phone,
         "session_str": final_session_str,
         "enabled": True,
         "valid": True,
         "last_error": None,
         "last_checked": current_ts,
-        "version": 1,  # Initialize version counter
+        "version": 1,
     }
-
     await redis_set_json(f"tg:session:{session_id}", session_data)
 
-    # Set this as the default session
+    # Set as default session in MySQL
+    await set_default_session(session_id)
+
+    # Also set in Redis for backward compatibility
     await redis_set_json("tg:session:default", {"session_id": session_id})
 
     # Notify forwarder to reload with new session
-    await notify_forwarder_reload("session_created")
+    if user_id:
+        # Notify specific user's worker
+        await redis_client.publish("forwarder:user", f"session_created:{user_id}")
+    else:
+        # Legacy notification
+        await notify_forwarder_reload("session_created")
 
     return session_data
 

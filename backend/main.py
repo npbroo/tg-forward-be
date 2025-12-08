@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from database import connect_db, disconnect_db
 from shared.redis_client import redis_get_json, redis_set_json
-from routes import auth, dialogs, routing
-from enhanced_forwarder import run_forwarder
+from routes import auth, dialogs, routing, users
+from forwarder_manager import start_forwarder_manager, stop_forwarder_manager
 from auth_jwt import get_current_admin
 
 
@@ -16,19 +17,27 @@ async def lifespan(_app: FastAPI):
     """
     Lifespan context manager for FastAPI startup and shutdown events.
     """
-    # Startup: Start the forwarder task
-    forwarder_task = asyncio.create_task(run_forwarder())
-    print("[STARTUP] Forwarder task started")
+    # Startup: Connect to database
+    print("[STARTUP] Connecting to database...")
+    await connect_db()
+    print("[STARTUP] Database connected")
+
+    # Startup: Start the forwarder manager (spawns one worker per user)
+    print("[STARTUP] Starting forwarder manager...")
+    await start_forwarder_manager()
+    print("[STARTUP] Forwarder manager started")
 
     yield
 
-    # Shutdown: Cancel the forwarder task
-    if forwarder_task and not forwarder_task.done():
-        print("[SHUTDOWN] Cancelling forwarder task...")
-        forwarder_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await forwarder_task
-        print("[SHUTDOWN] Forwarder task stopped")
+    # Shutdown: Stop the forwarder manager
+    print("[SHUTDOWN] Stopping forwarder manager...")
+    await stop_forwarder_manager()
+    print("[SHUTDOWN] Forwarder manager stopped")
+
+    # Shutdown: Disconnect from database
+    print("[SHUTDOWN] Disconnecting from database...")
+    await disconnect_db()
+    print("[SHUTDOWN] Database disconnected")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -68,3 +77,4 @@ async def redis_test(_: str = Depends(get_current_admin)):
 app.include_router(auth.router)
 app.include_router(dialogs.router)
 app.include_router(routing.router)
+app.include_router(users.router)
