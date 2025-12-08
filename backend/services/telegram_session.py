@@ -4,11 +4,8 @@ Enhanced Telegram session management with versioning and improved error handling
 import uuid
 from datetime import datetime, timezone
 
-from telethon import TelegramClient
-from telethon.sessions import StringSession
 from telethon.tl.types import User, Chat, Channel
 
-from backend.core.config import settings
 from backend.services.session_manager import EnhancedSessionManager, SessionRegistry
 from backend.database import create_session
 

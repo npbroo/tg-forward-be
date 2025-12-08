@@ -1,27 +1,16 @@
 """
 Enhanced session management with versioning, locking, and health checks.
 """
-import asyncio
-import time
-import uuid
 from datetime import datetime, timezone
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Tuple
 from enum import Enum
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.errors import (
-    AuthKeyUnregisteredError,
-    SessionPasswordNeededError,
-    UserDeactivatedError,
-    FloodWaitError,
-    PhoneMigrateError,
-    NetworkMigrateError,
-)
 
 from backend.core.config import settings
 from backend.database import (
-    get_session, update_session, get_valid_sessions, db
+    get_session, update_session, get_valid_sessions
 )
 from backend.services.events import emit_session_invalidated
 
@@ -44,7 +33,7 @@ class EnhancedSessionManager:
     """
     Enhanced session manager with versioning, locking, and health validation.
     """
-    
+
     def __init__(self, session_str: str | None = None):
         self.api_id = settings.TG_API_ID
         self.api_hash = settings.TG_API_HASH
@@ -58,35 +47,12 @@ class EnhancedSessionManager:
             session = StringSession()
         return TelegramClient(session, self.api_id, self.api_hash)
 
-    async def is_session_healthy(self, session_str: str) -> Tuple[bool, Optional[str]]:
-        """
-        Check if the session is healthy without keeping the connection open.
-        
-        Returns:
-            Tuple[bool, Optional[str]]: (is_healthy, error_message)
-        """
-        try:
-            manager = EnhancedSessionManager(session_str=session_str)
-            client = manager.create_client()
-            await client.connect()
-            
-            if not await client.is_user_authorized():
-                await client.disconnect()
-                return False, "Session not authorized"
-                
-            await client.disconnect()
-            return True, None
-        except (AuthKeyUnregisteredError, UserDeactivatedError, SessionPasswordNeededError) as e:
-            return False, f"{type(e).__name__}: {e}"
-        except Exception as e:
-            return False, f"Connection error: {e}"
-
 
 class SessionRegistry:
     """
     Registry to manage session states, versions, and locking.
     """
-    
+
     @staticmethod
     async def get_session_version(session_id: str) -> Optional[int]:
         """Get the current version of a session."""
@@ -147,24 +113,26 @@ class SessionRegistry:
     async def get_healthy_session() -> Tuple[Optional[str], Optional[str], Optional[dict]]:
         """
         Get the best available healthy session from all valid sessions.
+        Relies on session metadata updated by forwarders when Telethon raises errors.
         """
         sessions = await get_valid_sessions()
-        for session in sessions:
-            manager = EnhancedSessionManager(session_str=session.sessionStr)
-            is_healthy, _ = await manager.is_session_healthy(session.sessionStr)
+        if not sessions:
+            return None, None, None
 
-            if is_healthy:
-                return (session.sessionId, session.sessionStr, {
-                    "session_id": session.sessionId,
-                    "session_str": session.sessionStr,
-                    "label": session.label,
-                    "phone": session.phone,
-                    "enabled": session.enabled,
-                    "valid": session.valid,
-                    "version": session.version
-                })
-
-        return None, None, None
+        session = sessions[0]
+        return (
+            session.sessionId,
+            session.sessionStr,
+            {
+                "session_id": session.sessionId,
+                "session_str": session.sessionStr,
+                "label": session.label,
+                "phone": session.phone,
+                "enabled": session.enabled,
+                "valid": session.valid,
+                "version": session.version,
+            },
+        )
 
     @staticmethod
     async def is_session_available() -> bool:

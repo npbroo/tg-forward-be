@@ -16,6 +16,8 @@ class ForwarderManager:
     def __init__(self):
         self.workers: Dict[str, UserForwarderWorker] = {}  # user_id -> worker
         self.is_running = False
+        self._user_created_handler = None
+        self._user_deleted_handler = None
 
     async def start(self):
         """Start the forwarder manager and spawn workers for all users."""
@@ -27,21 +29,10 @@ class ForwarderManager:
         self.is_running = True
 
         # Register event listeners for user creation/deletion
-        async def on_user_created(data):
-            user_id = data.get("user_id")
-            username = data.get("username")
-            if user_id and username:
-                print(f"[FORWARDER-MANAGER] User created: {username}")
-                await self._spawn_worker(user_id, username)
-
-        async def on_user_deleted(data):
-            user_id = data.get("user_id")
-            if user_id:
-                print(f"[FORWARDER-MANAGER] User deleted: {user_id}")
-                await self._stop_worker(user_id)
-
-        event_emitter.on(EventType.USER_CREATED, on_user_created)
-        event_emitter.on(EventType.USER_DELETED, on_user_deleted)
+        self._user_created_handler = self._handle_user_created
+        self._user_deleted_handler = self._handle_user_deleted
+        event_emitter.on(EventType.USER_CREATED, self._user_created_handler)
+        event_emitter.on(EventType.USER_DELETED, self._user_deleted_handler)
 
         # Spawn workers for all existing users
         await self._spawn_all_workers()
@@ -55,6 +46,14 @@ class ForwarderManager:
 
         print("[FORWARDER-MANAGER] Stopping forwarder manager")
         self.is_running = False
+
+        if self._user_created_handler:
+            event_emitter.off(EventType.USER_CREATED, self._user_created_handler)
+            self._user_created_handler = None
+
+        if self._user_deleted_handler:
+            event_emitter.off(EventType.USER_DELETED, self._user_deleted_handler)
+            self._user_deleted_handler = None
 
         # Stop all workers
         await self._stop_all_workers()
@@ -96,6 +95,21 @@ class ForwarderManager:
             await worker.stop()
             del self.workers[user_id]
             print(f"[FORWARDER-MANAGER] Stopped worker for user {user_id}")
+
+    async def _handle_user_created(self, data):
+        """Handle user creation events by spawning a worker."""
+        user_id = data.get("user_id")
+        username = data.get("username")
+        if user_id and username:
+            print(f"[FORWARDER-MANAGER] User created: {username}")
+            await self._spawn_worker(user_id, username)
+
+    async def _handle_user_deleted(self, data):
+        """Handle user deletion events by stopping the worker."""
+        user_id = data.get("user_id")
+        if user_id:
+            print(f"[FORWARDER-MANAGER] User deleted: {user_id}")
+            await self._stop_worker(user_id)
 
 
 # Global manager instance

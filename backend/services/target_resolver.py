@@ -2,12 +2,11 @@
 Robust target resolution system with caching and fallback mechanisms.
 """
 import time
-from typing import Dict, List, Optional, Union, Tuple
-from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Union
+from dataclasses import dataclass
 
 from telethon import TelegramClient
 from telethon.tl.custom.dialog import Dialog
-from telethon.tl.types import User, Chat, Channel
 from telethon.errors import RPCError
 
 
@@ -201,17 +200,3 @@ class TargetResolver:
         """
         await self.get_channels(force_refresh=True)
         self.invalidate_all_resolutions()
-
-
-class TargetResolutionResult:
-    """
-    Result class for target resolution operations.
-    """
-    
-    def __init__(self, target: Union[str, int], entity: Optional[object], 
-                 success: bool, error: Optional[str] = None):
-        self.target = target
-        self.entity = entity
-        self.success = success
-        self.error = error
-        self.timestamp = time.time()

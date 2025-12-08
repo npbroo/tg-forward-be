@@ -3,9 +3,7 @@ Enhanced Telegram forwarder with better error handling, session management, and 
 """
 import asyncio
 import re
-import time
-from typing import Optional, Union, List, Dict, Tuple
-from enum import Enum
+from typing import Optional, Union, List, Dict, Tuple, Callable
 
 from telethon import TelegramClient, events
 from telethon.errors import (
@@ -13,20 +11,12 @@ from telethon.errors import (
     SessionPasswordNeededError,
     UserDeactivatedError,
     FloodWaitError,
-    ChatAdminRequiredError,
-    MessageIdInvalidError,
-    PeerIdInvalidError,
-    ChatWriteForbiddenError,
     SlowModeWaitError,
-    UserBannedInChannelError,
-    UserNotMutualContactError,
-    UserPrivacyRestrictedError,
     PhoneNumberBannedError,
     PhoneMigrateError,
     NetworkMigrateError,
 )
 
-from backend.core.config import settings
 from backend.services.session_manager import (
     EnhancedSessionManager,
     SessionRegistry,
@@ -100,17 +90,6 @@ def transform_message(text: str, transform_type: str) -> Optional[str]:
     return text
 
 
-class ForwarderEventType(Enum):
-    SESSION_CREATED = "session_created"
-    SESSION_INVALIDATED = "session_invalidated"
-    SESSION_ADDED = "session_added"
-    SESSION_REMOVED = "session_removed"
-    ROUTE_UPDATED = "route_updated"
-    ROUTE_CREATED = "route_created"
-    ROUTE_DELETED = "route_deleted"
-    SHUTDOWN_REQUESTED = "shutdown_requested"
-
-
 class EnhancedForwarder:
     """
     Enhanced forwarder implementation with improved error handling, 
@@ -119,7 +98,6 @@ class EnhancedForwarder:
     
     def __init__(self):
         self.shutdown_event: Optional[asyncio.Event] = None
-        self.session_lock_id: Optional[str] = None
         self.active_client: Optional[TelegramClient] = None
         self.target_resolver: Optional[TargetResolver] = None
         self.is_running = False
@@ -130,7 +108,8 @@ class EnhancedForwarder:
         
         # Track route errors separately from session errors
         self.route_error_counts: Dict[str, int] = {}
-        self.session_error_counts: Dict[str, int] = {}
+        self._route_event_handlers: List[Tuple[EventType, Callable]] = []
+        self._client_event_handler: Optional[Tuple[Callable, object]] = None
 
     async def load_enabled_routes(self) -> List[Dict]:
         """Load all enabled routes from database."""
@@ -146,86 +125,147 @@ class EnhancedForwarder:
             for r in routes
         ]
 
+    def _remove_route_event_handlers(self):
+        """Unsubscribe from route change events."""
+        for event_type, handler in self._route_event_handlers:
+            event_emitter.off(event_type, handler)
+        self._route_event_handlers.clear()
+
+    def _register_client_handler(
+        self,
+        client: TelegramClient,
+        route_configs: List[Dict],
+        session_id: str,
+        source_filters: List[Union[int, str]],
+    ):
+        """Register the message handler for the current client."""
+        if not source_filters:
+            return
+
+        self._remove_client_event_handler(client)
+        message_event = events.NewMessage(chats=source_filters)
+
+        async def handler(event: events.NewMessage.Event):
+            await self.handle_message(event, route_configs, session_id)
+
+        client.add_event_handler(handler, message_event)
+        self._client_event_handler = (handler, message_event)
+
+    def _remove_client_event_handler(self, client: Optional[TelegramClient]):
+        """Detach the current message handler from the client."""
+        if not client or not self._client_event_handler:
+            return
+
+        handler, event_builder = self._client_event_handler
+        try:
+            client.remove_event_handler(handler, event_builder)
+        except Exception as exc:
+            print(f"[CLEANUP] Failed to remove event handler: {exc}")
+        finally:
+            self._client_event_handler = None
+
+    async def _shutdown_active_client(self):
+        """Remove handlers and disconnect the active client."""
+        client = self.active_client
+        if not client:
+            self.target_resolver = None
+            return
+
+        self._remove_client_event_handler(client)
+        try:
+            await client.disconnect()
+        except Exception as exc:
+            print(f"[CLEANUP] Error disconnecting client: {exc}")
+
+        self.active_client = None
+        self.target_resolver = None
+
     async def run_forwarder(self):
         """Main forwarder worker loop with event-based reload support."""
         # Event flag for route reload requests
         reload_event = asyncio.Event()
 
         # Register event listener for route changes
-        async def on_route_change(data):
+        async def on_route_change(_data):
             print(f"[EVENT] Route change detected, triggering reload...")
             reload_event.set()
 
-        # Subscribe to route change events
-        event_emitter.on(EventType.ROUTE_CREATED, on_route_change)
-        event_emitter.on(EventType.ROUTE_UPDATED, on_route_change)
-        event_emitter.on(EventType.ROUTE_DELETED, on_route_change)
+        self._route_event_handlers = [
+            (EventType.ROUTE_CREATED, on_route_change),
+            (EventType.ROUTE_UPDATED, on_route_change),
+            (EventType.ROUTE_DELETED, on_route_change),
+        ]
+        for event_type, handler in self._route_event_handlers:
+            event_emitter.on(event_type, handler)
 
         print(f"[EVENT] Subscribed to route change events")
 
-        # Check if there are any sessions available initially
-        if not await SessionRegistry.is_session_available():
-            print("[FORWARDER] No healthy sessions available, cannot start forwarder")
-            return
+        try:
+            # Check if there are any sessions available initially
+            if not await SessionRegistry.is_session_available():
+                print("[FORWARDER] No healthy sessions available, cannot start forwarder")
+                return
 
-        while True:
-            # Calculate dynamic backoff based on failure count
-            if self.consecutive_failures > 0:
-                backoff_time = min(5 * (2 ** min(self.consecutive_failures - 1, 6)), self.max_backoff_time)
-                print(f"[FORWARDER] Waiting {backoff_time}s before restart due to {self.consecutive_failures} consecutive failures...")
+            while True:
+                # Calculate dynamic backoff based on failure count
+                if self.consecutive_failures > 0:
+                    backoff_time = min(5 * (2 ** min(self.consecutive_failures - 1, 6)), self.max_backoff_time)
+                    print(f"[FORWARDER] Waiting {backoff_time}s before restart due to {self.consecutive_failures} consecutive failures...")
+                    try:
+                        await asyncio.sleep(backoff_time)
+                    except asyncio.CancelledError:
+                        print("[FORWARDER] Forwarder cancelled during backoff, shutting down...")
+                        break
+
+                # Create shutdown event for this instance
+                self.shutdown_event = asyncio.Event()
+                reload_event.clear()
+
+                # Start forwarder instance
+                forwarder_task = asyncio.create_task(self.run_forwarder_instance())
+
+                # Listen for reload signals
+                async def listen_for_signals():
+                    await reload_event.wait()
+                    print(f"[RELOAD] Received reload signal, restarting forwarder...")
+                    self.shutdown_event.set()
+
+                signal_listener = asyncio.create_task(listen_for_signals())
+
+                # Wait for either task to complete
+                done, pending = await asyncio.wait(
+                    [forwarder_task, signal_listener],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+
+                # Cancel pending tasks
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+                # Wait for forwarder to fully stop
                 try:
-                    await asyncio.sleep(backoff_time)
+                    await forwarder_task
                 except asyncio.CancelledError:
-                    print("[FORWARDER] Forwarder cancelled during backoff, shutting down...")
-                    break
+                    print("[FORWARDER] Forwarder instance was cancelled")
+                except Exception as e:
+                    print(f"[ERROR] Forwarder instance failed with error: {e}")
 
-            # Create shutdown event for this instance
-            self.shutdown_event = asyncio.Event()
-            reload_event.clear()
-
-            # Start forwarder instance
-            forwarder_task = asyncio.create_task(self.run_forwarder_instance())
-
-            # Listen for reload signals
-            async def listen_for_signals():
-                await reload_event.wait()
-                print(f"[RELOAD] Received reload signal, restarting forwarder...")
-                self.shutdown_event.set()
-
-            signal_listener = asyncio.create_task(listen_for_signals())
-
-            # Wait for either task to complete
-            done, pending = await asyncio.wait(
-                [forwarder_task, signal_listener],
-                return_when=asyncio.FIRST_COMPLETED
-            )
-
-            # Cancel pending tasks
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-
-            # Wait for forwarder to fully stop
-            try:
-                await forwarder_task
-            except asyncio.CancelledError:
-                print("[FORWARDER] Forwarder instance was cancelled")
-            except Exception as e:
-                print(f"[ERROR] Forwarder instance failed with error: {e}")
-
-            # Check if forwarder crashed or was intentionally reloaded
-            if forwarder_task.done() and not self.shutdown_event.is_set():
-                # Forwarder exited on its own (due to error or no routes)
-                self.consecutive_failures += 1
-                print(f"[FORWARDER] Exited due to error (#{self.consecutive_failures}), will retry...")
-            else:
-                # Reload signal received - reset failure counter
-                self.consecutive_failures = 0
-                print("[RELOAD] Restarting forwarder with new configuration...")
-                await asyncio.sleep(1)  # Brief pause before restart
+                # Check if forwarder crashed or was intentionally reloaded
+                if forwarder_task.done() and not self.shutdown_event.is_set():
+                    # Forwarder exited on its own (due to error or no routes)
+                    self.consecutive_failures += 1
+                    print(f"[FORWARDER] Exited due to error (#{self.consecutive_failures}), will retry...")
+                else:
+                    # Reload signal received - reset failure counter
+                    self.consecutive_failures = 0
+                    print("[RELOAD] Restarting forwarder with new configuration...")
+                    await asyncio.sleep(1)  # Brief pause before restart
+        finally:
+            self._remove_route_event_handlers()
 
     async def run_forwarder_instance(self):
         """
@@ -233,6 +273,8 @@ class EnhancedForwarder:
         Returns when shutdown_event is set or client disconnects.
         """
         self.is_running = True
+        if not self.shutdown_event:
+            self.shutdown_event = asyncio.Event()
 
         try:
             session_id, session_str, session_data = await self.load_preferred_session()
@@ -271,9 +313,7 @@ class EnhancedForwarder:
                 source_filters.append(src)
 
             # Set up message handler
-            @client.on(events.NewMessage(chats=source_filters))
-            async def handler(event: events.NewMessage.Event):
-                await self.handle_message(event, route_configs, session_id)
+            self._register_client_handler(client, route_configs, session_id, source_filters)
 
             # Connect to Telegram
             try:
@@ -334,14 +374,7 @@ class EnhancedForwarder:
             print(f"[FORWARDER] Forwarder instance failed with error: {e}")
             raise
         finally:
-            # Cleanup resources
-            if self.active_client:
-                try:
-                    await self.active_client.disconnect()
-                except Exception as e:
-                    print(f"[CLEANUP] Error disconnecting client: {e}")
-                self.active_client = None
-
+            await self._shutdown_active_client()
             self.is_running = False
             print("[FORWARDER] Instance cleanup completed")
 
@@ -471,12 +504,3 @@ class EnhancedForwarder:
             raise RuntimeError("No healthy sessions available")
             
         return session_id, session_str, session_data
-
-
-# Legacy function for backward compatibility if needed elsewhere
-async def run_forwarder():
-    """
-    Legacy function to maintain compatibility with main.py
-    """
-    forwarder = EnhancedForwarder()
-    await forwarder.run_forwarder()
