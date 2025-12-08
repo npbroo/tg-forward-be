@@ -4,6 +4,7 @@ Each user gets their own forwarder instance that uses their Telegram session.
 """
 import asyncio
 from typing import Optional
+from backend.database import db
 from backend.services.forwarder.enhanced_forwarder import EnhancedForwarder
 from backend.database import get_user_by_id, get_session
 from backend.services.session_manager import SessionRegistry
@@ -160,7 +161,6 @@ class UserForwarderWorker:
 
     async def _get_user_session(self):
         """Get the user's active Telegram session from the database."""
-        from database import db
 
         # Find sessions for this user that are valid and enabled
         sessions = await db.session.find_many(

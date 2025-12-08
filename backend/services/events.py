@@ -101,6 +101,10 @@ def get_event_emitter() -> EventEmitter:
     return _event_emitter
 
 
+# Public event emitter instance accessible directly
+event_emitter = get_event_emitter()
+
+
 # Convenience functions
 async def emit_route_change():
     """Emit event when routes are modified (create/update/delete)."""

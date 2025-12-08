@@ -144,9 +144,9 @@ async def mark_session_checked_ok(session_id: str):
     await SessionRegistry.mark_session_checked_ok(session_id)
 
 
-async def fetch_dialogs(session_str: str) -> list[dict]:
+async def fetch_channels(session_str: str) -> list[dict]:
     """
-    Given a stored StringSession, connect and return a list of dialogs.
+    Given a stored StringSession, connect and return a list of channels.
     """
     manager = EnhancedSessionManager(session_str=session_str)
     client = manager.create_client()

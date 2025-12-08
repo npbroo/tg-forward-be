@@ -30,38 +30,38 @@ class TargetResolver:
         self.client = client
         self.cache_ttl = cache_ttl
         self.resolutions: Dict[Union[str, int], TargetResolution] = {}
-        self.dialogs: List[Dialog] = []
-        self.dialogs_last_fetched: float = 0.0
-        self.dialogs_ttl: int = 1800  # 30 minutes default TTL for dialogs
+        self.channels: List[Dialog] = []
+        self.channels_last_fetched: float = 0.0
+        self.channels_ttl: int = 1800  # 30 minutes default TTL for channels
 
-    async def get_dialogs(self, force_refresh: bool = False) -> List[Dialog]:
+    async def get_channels(self, force_refresh: bool = False) -> List[Dialog]:
         """
-        Get dialogs with caching and TTL management.
-        
+        Get channels with caching and TTL management.
+
         Args:
-            force_refresh: If True, ignores cache and fetches fresh dialogs
-            
+            force_refresh: If True, ignores cache and fetches fresh channels
+
         Returns:
-            List of dialogs
+            List of channels
         """
         current_time = time.time()
-        
-        # Check if we need to refresh dialogs
-        if (force_refresh or 
-            not self.dialogs or 
-            current_time - self.dialogs_last_fetched > self.dialogs_ttl):
-            
+
+        # Check if we need to refresh channels
+        if (force_refresh or
+            not self.channels or
+            current_time - self.channels_last_fetched > self.channels_ttl):
+
             try:
-                self.dialogs = await self.client.get_dialogs(limit=None)
-                self.dialogs_last_fetched = current_time
+                self.channels = await self.client.get_dialogs(limit=None)
+                self.channels_last_fetched = current_time
             except RPCError as e:
-                # Log the error but return cached dialogs if available
-                print(f"[WARN] Error fetching dialogs: {e}")
-                if not self.dialogs:
-                    # If no cached dialogs, re-raise the error
+                # Log the error but return cached channels if available
+                print(f"[WARN] Error fetching channels: {e}")
+                if not self.channels:
+                    # If no cached channels, re-raise the error
                     raise
-                
-        return self.dialogs
+
+        return self.channels
 
     async def resolve_target(self, target_chat: Union[str, int], force_refresh: bool = False) -> Optional[object]:
         """
@@ -111,13 +111,13 @@ class TargetResolver:
         """
         Internal method to resolve a single target chat to an entity.
         """
-        dialogs = await self.get_dialogs()
-        
+        channels = await self.get_channels()
+
         if isinstance(target_chat, int):
             # Match by numeric ID - handle both positive and negative IDs
             abs_target = abs(target_chat)
-            for dialog in dialogs:
-                ent = dialog.entity
+            for channel in channels:
+                ent = channel.entity
                 ent_id = getattr(ent, "id", None)
                 if ent_id and abs(ent_id) == abs_target:
                     return ent
@@ -154,12 +154,12 @@ class TargetResolver:
         if not isinstance(target_chat, str):
             return None
             
-        dialogs = await self.get_dialogs()
+        channels = await self.get_channels()
         target_lower = target_chat.lower().strip()
-        
+
         # Try partial matches (first 3+ chars match)
-        for dialog in dialogs:
-            ent = dialog.entity
+        for channel in channels:
+            ent = channel.entity
             username = getattr(ent, "username", None)
             title = getattr(ent, "title", None)
             first_name = getattr(ent, "first_name", None)
@@ -197,9 +197,9 @@ class TargetResolver:
 
     async def refresh_all(self):
         """
-        Refresh all cached data (dialogs and target resolutions).
+        Refresh all cached data (channels and target resolutions).
         """
-        await self.get_dialogs(force_refresh=True)
+        await self.get_channels(force_refresh=True)
         self.invalidate_all_resolutions()
 
 

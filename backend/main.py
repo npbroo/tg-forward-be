@@ -1,12 +1,19 @@
 import asyncio
 import contextlib
 from contextlib import asynccontextmanager
+import os
+import sys
+
+# Add the parent directory to the path to enable absolute imports when running directly
+current_dir = os.path.dirname(__file__)
+parent_dir = os.path.join(current_dir, '..')
+sys.path.insert(0, os.path.abspath(parent_dir))
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.database import connect_db, disconnect_db
-from backend.api.routes import auth, dialogs, routing, users
+from backend.api.routes import auth, channels, routing, users
 from backend.services.forwarder import start_forwarder_manager, stop_forwarder_manager
 from backend.auth import get_current_admin
 
@@ -38,7 +45,7 @@ async def lifespan(_app: FastAPI):
     await disconnect_db()
     print("[SHUTDOWN] Database disconnected")
 
-
+print("hello")
 app = FastAPI(lifespan=lifespan)
 
 # CORS middleware for frontend access (allow all origins)
@@ -60,6 +67,6 @@ async def protected(admin: str = Depends(get_current_admin)):
 
 # Include routers
 app.include_router(auth.router)
-app.include_router(dialogs.router)
+app.include_router(channels.router)
 app.include_router(routing.router)
 app.include_router(users.router)

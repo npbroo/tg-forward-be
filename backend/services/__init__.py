@@ -21,7 +21,7 @@ from .telegram_session import (
     list_sessions,
     mark_session_invalid as telegram_mark_session_invalid,
     mark_session_checked_ok as telegram_mark_session_checked_ok,
-    fetch_dialogs,
+    fetch_channels,
 )
 from .target_resolver import TargetResolver
 
@@ -42,6 +42,6 @@ __all__ = [
     "start_login",
     "confirm_login",
     "list_sessions",
-    "fetch_dialogs",
+    "fetch_channels",
     "TargetResolver",
 ]

@@ -1,0 +1,6 @@
+{
+  "name": "tg-forward-be",
+  "prisma": {
+    "schema": "backend/schema.prisma"
+  }
+}

@@ -75,11 +75,11 @@ async def main():
         line = f"{dialog_type}\t{name}\t{username_or_phone}\t{dialog_id}\n"
         lines.append(line)
 
-    out_file = "scripts/dump/telegram_dialogs.txt"
+    out_file = "scripts/dump/telegram_channels.txt"
     with open(out_file, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
-    print(f"Done. Wrote {len(dialogs)} dialogs to {out_file}")
+    print(f"Done. Wrote {len(dialogs)} channels to {out_file}")
 
 
 if __name__ == "__main__":

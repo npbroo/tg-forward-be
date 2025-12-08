@@ -37,7 +37,7 @@ TARGET_CHAT = parse_chat_id(TARGET_CHAT_RAW)
 
 client = TelegramClient(StringSession(SESSION_STR), API_ID, API_HASH)
 
-# Will hold a proper entity for the target (from dialogs)
+# Will hold a proper entity for the target (from channels)
 TARGET_ENTITY = None
 
 
@@ -103,19 +103,19 @@ async def main():
     print(" Channel Forwarder Online")
     print(" Logged in as:", me.username or me.id)
 
-    # Load dialogs once and resolve target from that list
-    dialogs = await client.get_dialogs(limit=None)
+    # Load channels once and resolve target from that list
+    channels = await client.get_dialogs(limit=None)
 
     # Try to find target by id or username/title
     target_entity = None
     if isinstance(TARGET_CHAT, int):
-        for d in dialogs:
+        for d in channels:
             if getattr(d.entity, "id", None) == TARGET_CHAT:
                 target_entity = d.entity
                 break
     else:
         # string: try username first, then title
-        for d in dialogs:
+        for d in channels:
             ent = d.entity
             username = getattr(ent, "username", None)
             title = getattr(ent, "title", None)
@@ -126,7 +126,7 @@ async def main():
 
     if not target_entity:
         raise RuntimeError(
-            f"Could not resolve TARGET_CHAT={TARGET_CHAT_RAW} from dialogs. "
+            f"Could not resolve TARGET_CHAT={TARGET_CHAT_RAW} from channels. "
             f"Make sure this account has an open dialog with that user/channel."
         )
 
