@@ -5,6 +5,7 @@ from backend.services.telegram_session import fetch_channels
 from backend.services.session_manager import SessionRegistry
 from backend.auth import get_current_admin
 from backend.database import get_user_by_username, db
+from telethon.errors import RPCError
 
 router = APIRouter(prefix="/channels", tags=["channels"])
 
@@ -44,21 +45,24 @@ async def get_channels(
     try:
         channels = await fetch_channels(session_str=session.sessionStr)
         return [DialogModel(**d) for d in channels]
-    except Exception as e:
-        # Check if this is an authentication error that should invalidate the session
-        error_str = str(e).lower()
+    except RPCError as exc:
+        error_str = str(exc).lower()
         auth_errors = ['auth', 'authorization', 'unauthorized', 'not authorized', 'authkey']
 
         if any(auth_err in error_str for auth_err in auth_errors):
-            # Mark session as invalid for authentication errors
-            await SessionRegistry.mark_session_invalid(session.sessionId, f"Channel fetch failed: {str(e)}")
+            await SessionRegistry.mark_session_invalid(session.sessionId, f"Channel fetch failed: {exc}")
             raise HTTPException(
                 status_code=401,
-                detail=f"Session authentication failed and has been invalidated. Please login again using /auth/start and /auth/confirm. Error: {str(e)}"
-            )
-        else:
-            # For other errors, don't mark session as invalid
-            raise HTTPException(
-                status_code=401,
-                detail=f"Session is invalid or expired. Please login again using /auth/start and /auth/confirm. Error: {str(e)}"
-            )
+                detail=(
+                    "Session authentication failed and has been invalidated. "
+                    "Please login again using /auth/start and /auth/confirm. "
+                    f"Error: {exc}"
+                ),
+            ) from exc
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Session is invalid or expired. Please login again using /auth/start and /auth/confirm. "
+                f"Error: {exc}"
+            ),
+        ) from exc

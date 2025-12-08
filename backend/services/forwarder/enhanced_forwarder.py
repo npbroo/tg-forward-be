@@ -15,6 +15,7 @@ from telethon.errors import (
     PhoneNumberBannedError,
     PhoneMigrateError,
     NetworkMigrateError,
+    TelethonError,
 )
 
 from backend.services.session_manager import (
@@ -56,7 +57,7 @@ def is_valid_solana_address(ca: str) -> bool:
     try:
         Pubkey.from_string(ca)
         return True
-    except Exception:
+    except ValueError:
         return False
 
 
@@ -159,7 +160,7 @@ class EnhancedForwarder:
         handler, event_builder = self._client_event_handler
         try:
             client.remove_event_handler(handler, event_builder)
-        except Exception as exc:
+        except (ValueError, RuntimeError) as exc:
             print(f"[CLEANUP] Failed to remove event handler: {exc}")
         finally:
             self._client_event_handler = None
@@ -174,7 +175,7 @@ class EnhancedForwarder:
         self._remove_client_event_handler(client)
         try:
             await client.disconnect()
-        except Exception as exc:
+        except OSError as exc:
             print(f"[CLEANUP] Error disconnecting client: {exc}")
 
         self.active_client = None
@@ -187,7 +188,7 @@ class EnhancedForwarder:
 
         # Register event listener for route changes
         async def on_route_change(_data):
-            print(f"[EVENT] Route change detected, triggering reload...")
+            print("[EVENT] Route change detected, triggering reload...")
             reload_event.set()
 
         self._route_event_handlers = [
@@ -198,7 +199,7 @@ class EnhancedForwarder:
         for event_type, handler in self._route_event_handlers:
             event_emitter.on(event_type, handler)
 
-        print(f"[EVENT] Subscribed to route change events")
+        print("[EVENT] Subscribed to route change events")
 
         try:
             # Check if there are any sessions available initially
@@ -227,13 +228,13 @@ class EnhancedForwarder:
                 # Listen for reload signals
                 async def listen_for_signals():
                     await reload_event.wait()
-                    print(f"[RELOAD] Received reload signal, restarting forwarder...")
+                    print("[RELOAD] Received reload signal, restarting forwarder...")
                     self.shutdown_event.set()
 
                 signal_listener = asyncio.create_task(listen_for_signals())
 
                 # Wait for either task to complete
-                done, pending = await asyncio.wait(
+                _done, pending = await asyncio.wait(
                     [forwarder_task, signal_listener],
                     return_when=asyncio.FIRST_COMPLETED
                 )
@@ -247,12 +248,12 @@ class EnhancedForwarder:
                         pass
 
                 # Wait for forwarder to fully stop
-                try:
-                    await forwarder_task
-                except asyncio.CancelledError:
+                results = await asyncio.gather(forwarder_task, return_exceptions=True)
+                outcome = results[0]
+                if isinstance(outcome, asyncio.CancelledError):
                     print("[FORWARDER] Forwarder instance was cancelled")
-                except Exception as e:
-                    print(f"[ERROR] Forwarder instance failed with error: {e}")
+                elif isinstance(outcome, BaseException):
+                    print(f"[ERROR] Forwarder instance failed with error: {outcome}")
 
                 # Check if forwarder crashed or was intentionally reloaded
                 if forwarder_task.done() and not self.shutdown_event.is_set():
@@ -277,9 +278,9 @@ class EnhancedForwarder:
             self.shutdown_event = asyncio.Event()
 
         try:
-            session_id, session_str, session_data = await self.load_preferred_session()
-        except RuntimeError as e:
-            print(f"[FORWARDER] {e}")
+            session_id, session_str, _session_data = await self.load_preferred_session()
+        except RuntimeError as exc:
+            print(f"[FORWARDER] {exc}")
             return
 
         # Initialize client and resolver
@@ -329,9 +330,9 @@ class EnhancedForwarder:
                 # Update session health
                 await SessionRegistry.mark_session_checked_ok(session_id)
 
-            except Exception as e:
-                error_type = self._classify_error(e)
-                error_msg = f"{type(e).__name__}: {e}"
+            except (TelethonError, OSError) as exc:
+                error_type = self._classify_error(exc)
+                error_msg = f"{type(exc).__name__}: {exc}"
                 
                 if error_type == SessionErrorType.AUTH_ERROR:
                     await SessionRegistry.mark_session_invalid(session_id, error_msg, error_type)
@@ -370,9 +371,6 @@ class EnhancedForwarder:
 
         except asyncio.CancelledError:
             print("[FORWARDER] Forwarder instance cancelled")
-        except Exception as e:
-            print(f"[FORWARDER] Forwarder instance failed with error: {e}")
-            raise
         finally:
             await self._shutdown_active_client()
             self.is_running = False
@@ -431,10 +429,10 @@ class EnhancedForwarder:
             try:
                 await self.active_client.send_message(target_entity, new_text)
                 print(f"[SUCCESS] Message sent for route {rc['route_id']}")
-            except Exception as e:
-                await self.handle_send_error(e, rc['route_id'], session_id, text_preview)
+            except (TelethonError, OSError) as exc:
+                await self.handle_send_error(exc, rc['route_id'], session_id)
 
-    async def handle_send_error(self, error: Exception, route_id: str, session_id: str, text_preview: str):
+    async def handle_send_error(self, error: Exception, route_id: str, session_id: str):
         """Handle errors that occur during message sending."""
         error_type = self._classify_error(error)
         error_msg = f"{type(error).__name__}: {error}"
@@ -462,8 +460,6 @@ class EnhancedForwarder:
     @staticmethod
     def _classify_error(error: Exception) -> SessionErrorType:
         """Classify an error to determine if it's session-related."""
-        error_type = type(error)
-        
         # Authentication-related errors - mark session as invalid
         auth_errors = (
             AuthKeyUnregisteredError, 

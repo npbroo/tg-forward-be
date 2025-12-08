@@ -112,16 +112,17 @@ class ForwarderManager:
             await self._stop_worker(user_id)
 
 
-# Global manager instance
-_manager: ForwarderManager = None
+# Global manager holder
+_MANAGER_STATE = {"instance": None}
 
 
 async def get_forwarder_manager() -> ForwarderManager:
     """Get the global forwarder manager instance."""
-    global _manager
-    if _manager is None:
-        _manager = ForwarderManager()
-    return _manager
+    manager = _MANAGER_STATE["instance"]
+    if manager is None:
+        manager = ForwarderManager()
+        _MANAGER_STATE["instance"] = manager
+    return manager
 
 
 async def start_forwarder_manager():
@@ -132,7 +133,7 @@ async def start_forwarder_manager():
 
 async def stop_forwarder_manager():
     """Stop the global forwarder manager."""
-    global _manager
-    if _manager:
-        await _manager.stop()
-        _manager = None
+    manager = _MANAGER_STATE["instance"]
+    if manager:
+        await manager.stop()
+        _MANAGER_STATE["instance"] = None

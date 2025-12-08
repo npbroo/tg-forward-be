@@ -123,7 +123,7 @@ class TargetResolver:
         else:
             # String match - try username, title, or name
             target_lower = str(target_chat).lower().strip()
-            for dialog in dialogs:
+            for dialog in channels:
                 ent = dialog.entity
                 
                 # Get entity attributes
@@ -165,7 +165,6 @@ class TargetResolver:
             last_name = getattr(ent, "last_name", None)
             
             full_name = f"{first_name or ''} {last_name or ''}".strip()
-            entity_name = (title or full_name or "").lower()
             
             if ((username and len(target_lower) >= 3 and username.lower().startswith(target_lower)) or
                 (title and len(target_lower) >= 3 and title.lower().startswith(target_lower)) or

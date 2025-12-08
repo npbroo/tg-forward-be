@@ -55,8 +55,8 @@ async def auth_confirm(
 
     try:
         session_data = await confirm_login(body.login_id, body.code, user_id=user.id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return SessionModel(
         session_id=session_data["session_id"],

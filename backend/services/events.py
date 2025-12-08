@@ -90,14 +90,11 @@ class EventEmitter:
 
 
 # Global event emitter instance
-_event_emitter: EventEmitter = None
+_event_emitter: EventEmitter = EventEmitter()
 
 
 def get_event_emitter() -> EventEmitter:
     """Get the global event emitter instance."""
-    global _event_emitter
-    if _event_emitter is None:
-        _event_emitter = EventEmitter()
     return _event_emitter
 
 

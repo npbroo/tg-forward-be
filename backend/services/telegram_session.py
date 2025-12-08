@@ -74,7 +74,7 @@ async def confirm_login(login_id: str, code: str, user_id: str = None) -> dict:
     label = me.username or phone
 
     # Save to MySQL database
-    session = await create_session(
+    await create_session(
         session_id=session_id,
         session_str=final_session_str,
         label=label,

@@ -66,9 +66,9 @@ async def get_session(session_id: str) -> Optional[Session]:
     return await db.session.find_unique(where={"sessionId": session_id})
 
 
-async def get_session_by_id(id: str) -> Optional[Session]:
+async def get_session_by_id(session_pk: str) -> Optional[Session]:
     """Get a session by primary key id."""
-    return await db.session.find_unique(where={"id": id})
+    return await db.session.find_unique(where={"id": session_pk})
 
 
 async def create_session(

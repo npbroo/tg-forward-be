@@ -99,11 +99,11 @@ async def get_current_admin(
     token = credentials.credentials
     try:
         payload = decode_jwt(token)
-    except JWTDecodeError:
+    except JWTDecodeError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",
-        )
+        ) from exc
 
     username = payload.get("sub")
     if not username:
