@@ -143,11 +143,17 @@ def _auto_register():
     from .solana_ca import solana_ca_transform
     from .url_extractor import url_extractor_transform
     from .ticker_symbol import ticker_symbol_transform
+    from .gembot_conservative import gembot_conservative_transform
+    from .gembot_balanced import gembot_balanced_transform
+    from .gembot_risky import gembot_risky_transform
 
     register_transformation(raw_transform)
     register_transformation(solana_ca_transform)
     register_transformation(url_extractor_transform)
     register_transformation(ticker_symbol_transform)
+    register_transformation(gembot_conservative_transform)
+    register_transformation(gembot_balanced_transform)
+    register_transformation(gembot_risky_transform)
 
 
 # Run auto-registration on import
