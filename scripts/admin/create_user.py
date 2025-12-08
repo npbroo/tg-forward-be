@@ -4,6 +4,11 @@ Run this after setting up the database to create your first user.
 """
 import asyncio
 import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.database import connect_db, disconnect_db, create_user, get_user_by_username
 from backend.auth.password import hash_password
@@ -18,9 +23,8 @@ async def main():
         password = sys.argv[2]
     else:
         print("Usage: python create_initial_user.py <username> <password>")
-        print("\nCreating default admin user...")
-        username = "admin"
-        password = "password"
+        print("\nExiting...")
+        return
 
     # Check if user already exists
     existing = await get_user_by_username(username)

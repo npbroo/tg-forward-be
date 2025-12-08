@@ -15,7 +15,7 @@ from telethon.errors import (
     PhoneNumberBannedError,
     PhoneMigrateError,
     NetworkMigrateError,
-    TelethonError,
+    RPCError,
 )
 
 from backend.services.session_manager import (
@@ -330,7 +330,7 @@ class EnhancedForwarder:
                 # Update session health
                 await SessionRegistry.mark_session_checked_ok(session_id)
 
-            except (TelethonError, OSError) as exc:
+            except (RPCError, OSError) as exc:
                 error_type = self._classify_error(exc)
                 error_msg = f"{type(exc).__name__}: {exc}"
                 
@@ -429,7 +429,7 @@ class EnhancedForwarder:
             try:
                 await self.active_client.send_message(target_entity, new_text)
                 print(f"[SUCCESS] Message sent for route {rc['route_id']}")
-            except (TelethonError, OSError) as exc:
+            except (RPCError, OSError) as exc:
                 await self.handle_send_error(exc, rc['route_id'], session_id)
 
     async def handle_send_error(self, error: Exception, route_id: str, session_id: str):
