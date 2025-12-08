@@ -58,13 +58,13 @@ class DialogModel(BaseModel):
 class RouteCreateRequest(BaseModel):
     source_chat: str | int
     target_chat: str | int
-    transform_type: str = "solana_ca"  # or "raw"
+    transform_type: str | list[str] = "solana_ca"  # Single transformation or chain
     enabled: bool = True
 
 
 class RouteUpdateRequest(BaseModel):
     enabled: bool | None = None
-    transform_type: str | None = None
+    transform_type: str | list[str] | None = None  # Single transformation or chain
     source_chat: str | int | None = None
     target_chat: str | int | None = None
 
@@ -73,5 +73,5 @@ class RouteModel(BaseModel):
     route_id: str
     source_chat: str | int
     target_chat: str | int
-    transform_type: str
+    transform_type: str | list[str]  # Single transformation or chain
     enabled: bool

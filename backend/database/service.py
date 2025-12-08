@@ -1,18 +1,15 @@
 """
 Database service layer using Prisma ORM for MySQL.
 """
-import os
 from typing import Optional, List
 
 from prisma import Prisma
 from prisma.models import User, Session, Route, LoginSession
 
-# Global Prisma client instance
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL environment variable is required")
+from backend.core.config import settings
 
-db = Prisma(datasource={"url": DATABASE_URL})
+# Global Prisma client instance
+db = Prisma(datasource={"url": settings.DATABASE_URL})
 
 
 async def connect_db():
@@ -157,19 +154,33 @@ async def create_route(
     route_id: str,
     source_chat: str,
     target_chat: str,
-    transform_type: str = "solana_ca",
+    transform_type: str | list[str] = "solana_ca",
     enabled: bool = True,
     user_id: str | None = None,
 ) -> Route:
-    """Create a new route."""
+    """Create a new route with optional transformation chain."""
+    import json
+
     if not user_id:
         raise ValueError("user_id is required to create a route")
+
+    # Handle transformation chain
+    if isinstance(transform_type, list):
+        # Store the first transformation in transformType for backward compatibility
+        # Store the full chain in transformChain as JSON
+        transform_chain = json.dumps(transform_type)
+        primary_transform = transform_type[0] if transform_type else "raw"
+    else:
+        transform_chain = None
+        primary_transform = transform_type
+
     return await db.route.create(
         data={
             "routeId": route_id,
             "sourceChat": source_chat,
             "targetChat": target_chat,
-            "transformType": transform_type,
+            "transformType": primary_transform,
+            "transformChain": transform_chain,
             "enabled": enabled,
             "userId": user_id,
         }

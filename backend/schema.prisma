@@ -7,6 +7,7 @@ generator client {
 
 datasource db {
   provider = "mysql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -46,16 +47,17 @@ model Session {
 }
 
 model Route {
-  id            String   @id @default(uuid())
-  routeId       String   @unique @map("route_id")
-  sourceChat    String   @map("source_chat")
-  targetChat    String   @map("target_chat")
-  transformType String   @map("transform_type") @default("solana_ca")
-  enabled       Boolean  @default(true)
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-  userId        String   @map("user_id")
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String   @id @default(uuid())
+  routeId          String   @unique @map("route_id")
+  sourceChat       String   @map("source_chat")
+  targetChat       String   @map("target_chat")
+  transformType    String   @map("transform_type") @default("solana_ca")
+  transformChain   String?  @map("transform_chain") @db.Text
+  enabled          Boolean  @default(true)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  userId           String   @map("user_id")
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("routes")
 }

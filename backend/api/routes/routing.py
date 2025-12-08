@@ -1,3 +1,4 @@
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Path
@@ -13,8 +14,21 @@ from backend.database import (
 )
 from backend.services.events import emit_route_change
 from backend.auth import get_current_admin
+from backend.transformations import list_transformations
 
 router = APIRouter(prefix="/routes", tags=["routes"])
+
+
+def _parse_transform_type(route) -> str | list[str]:
+    """Parse transformation type from route, handling both single and chain formats."""
+    # Check if transformChain attribute exists (only after migration)
+    if hasattr(route, 'transformChain') and route.transformChain:
+        try:
+            return json.loads(route.transformChain)
+        except (json.JSONDecodeError, TypeError):
+            # Fallback to single transformation if JSON parsing fails
+            return route.transformType
+    return route.transformType
 
 
 async def _require_current_user(username: str):
@@ -44,7 +58,7 @@ async def create_route(
         route_id=route.routeId,
         source_chat=route.sourceChat,
         target_chat=route.targetChat,
-        transform_type=route.transformType,
+        transform_type=_parse_transform_type(route),
         enabled=route.enabled
     )
 
@@ -59,7 +73,7 @@ async def list_routes(
         route_id=r.routeId,
         source_chat=r.sourceChat,
         target_chat=r.targetChat,
-        transform_type=r.transformType,
+        transform_type=_parse_transform_type(r),
         enabled=r.enabled
     ) for r in routes]
 
@@ -79,7 +93,13 @@ async def update_route(
     if body.enabled is not None:
         update_data["enabled"] = body.enabled
     if body.transform_type is not None:
-        update_data["transformType"] = body.transform_type
+        # Handle transformation chain updates
+        if isinstance(body.transform_type, list):
+            update_data["transformChain"] = json.dumps(body.transform_type)
+            update_data["transformType"] = body.transform_type[0] if body.transform_type else "raw"
+        else:
+            update_data["transformType"] = body.transform_type
+            update_data["transformChain"] = None
     if body.source_chat is not None:
         update_data["sourceChat"] = str(body.source_chat)
     if body.target_chat is not None:
@@ -94,7 +114,7 @@ async def update_route(
         route_id=route.routeId,
         source_chat=route.sourceChat,
         target_chat=route.targetChat,
-        transform_type=route.transformType,
+        transform_type=_parse_transform_type(route),
         enabled=route.enabled
     )
 
@@ -116,3 +136,14 @@ async def delete_route(
     await emit_route_change()
 
     return {"ok": True}
+
+
+@router.get("/transformations")
+async def get_transformations():
+    """
+    Get all available transformation types.
+
+    Returns a dictionary mapping transformation names to their descriptions.
+    Use these names when creating or updating routes.
+    """
+    return list_transformations()

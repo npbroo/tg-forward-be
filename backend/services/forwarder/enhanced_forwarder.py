@@ -26,16 +26,7 @@ from backend.services.session_manager import (
 from backend.services.target_resolver import TargetResolver
 from backend.database import list_routes
 from backend.services.events import event_emitter, EventType
-
-try:
-    from solders.pubkey import Pubkey
-    SOLANA_AVAILABLE = True
-except ImportError:
-    SOLANA_AVAILABLE = False
-    print("Warning: solders not installed. Solana address validation will be disabled.")
-
-
-CA_REGEX = re.compile(r"(?<![1-9A-HJ-NP-Za-km-z])([1-9A-HJ-NP-Za-km-z]{32,44})(?![1-9A-HJ-NP-Za-km-z])")
+from backend.transformations import transform_message
 
 
 def parse_chat_id(value: Union[str, int]) -> Union[str, int]:
@@ -46,49 +37,6 @@ def parse_chat_id(value: Union[str, int]) -> Union[str, int]:
     if re.fullmatch(r"-?\d+", v):
         return int(v)
     return v
-
-
-def is_valid_solana_address(ca: str) -> bool:
-    """Validate if a string is a valid Solana address."""
-    if not SOLANA_AVAILABLE:
-        # If solders is not available, do basic validation
-        return len(ca) >= 32 and len(ca) <= 44
-
-    try:
-        Pubkey.from_string(ca)
-        return True
-    except ValueError:
-        return False
-
-
-def transform_message_solana_ca(text: str) -> Optional[str]:
-    """Extract and validate Solana contract address from text."""
-    text = (text or "").strip()
-    if not text:
-        return None
-
-    candidates = CA_REGEX.findall(text)
-    for ca in candidates:
-        if is_valid_solana_address(ca):
-            return ca
-
-    return None
-
-
-def transform_message(text: str, transform_type: str) -> Optional[str]:
-    """Transform message based on transform_type."""
-    text = (text or "").strip()
-    if not text:
-        return None
-
-    if transform_type == "raw":
-        return text
-
-    if transform_type == "solana_ca":
-        return transform_message_solana_ca(text)
-
-    # default fallback
-    return text
 
 
 class EnhancedForwarder:
@@ -117,17 +65,28 @@ class EnhancedForwarder:
 
     async def load_enabled_routes(self) -> List[Dict]:
         """Load all enabled routes from database."""
+        import json
+
         routes = await list_routes(enabled_only=True, user_id=self.user_id)
-        return [
-            {
+        result = []
+        for r in routes:
+            # Parse transformation chain if present (only after migration)
+            if hasattr(r, 'transformChain') and r.transformChain:
+                try:
+                    transform_type = json.loads(r.transformChain)
+                except (json.JSONDecodeError, TypeError):
+                    transform_type = r.transformType
+            else:
+                transform_type = r.transformType
+
+            result.append({
                 "route_id": r.routeId,
                 "source_chat": r.sourceChat,
                 "target_chat": r.targetChat,
-                "transform_type": r.transformType,
+                "transform_type": transform_type,
                 "enabled": r.enabled
-            }
-            for r in routes
-        ]
+            })
+        return result
 
     def _remove_route_event_handlers(self):
         """Unsubscribe from route change events."""
