@@ -3,9 +3,9 @@ Forwarder Manager - Spawns and manages one forwarder worker per user.
 """
 import asyncio
 from typing import Dict
-from user_forwarder import UserForwarderWorker
-from database import list_users
-from events import event_emitter, EventType
+from backend.services.forwarder.user_forwarder import UserForwarderWorker
+from backend.database import list_users
+from backend.services.events import event_emitter, EventType
 
 
 class ForwarderManager:

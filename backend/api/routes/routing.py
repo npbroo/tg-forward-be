@@ -2,10 +2,10 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 
-from models import RouteCreateRequest, RouteUpdateRequest, RouteModel
-from database import create_route as db_create_route, get_route, update_route as db_update_route, delete_route as db_delete_route, list_routes as db_list_routes
-from events import emit_route_change
-from auth_jwt import get_current_admin
+from backend.core.models import RouteCreateRequest, RouteUpdateRequest, RouteModel
+from backend.database import create_route as db_create_route, get_route, update_route as db_update_route, delete_route as db_delete_route, list_routes as db_list_routes
+from backend.services.events import emit_route_change
+from backend.auth import get_current_admin
 
 router = APIRouter(prefix="/routes", tags=["routes"])
 @router.post("", response_model=RouteModel)

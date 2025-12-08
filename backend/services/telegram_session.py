@@ -8,16 +8,16 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.types import User, Chat, Channel
 
-from config import settings
-from session_manager import EnhancedSessionManager, SessionRegistry
-from database import create_session
+from backend.core.config import settings
+from backend.services.session_manager import EnhancedSessionManager, SessionRegistry
+from backend.database import create_session
 
 
 async def start_login(phone: str) -> str:
     """
     Start Telegram login: send code to phone, store temp session + phone_code_hash in database.
     """
-    from database import create_login_session
+    from backend.database import create_login_session
 
     manager = EnhancedSessionManager(session_str=None)
     client = manager.create_client()
@@ -47,8 +47,8 @@ async def confirm_login(login_id: str, code: str, user_id: str = None) -> dict:
     Confirm login with the code, finalize session and store in database.
     Returns the stored session data.
     """
-    from database import get_login_session, delete_login_session
-    from events import emit_session_created
+    from backend.database import get_login_session, delete_login_session
+    from backend.services.events import emit_session_created
 
     login_state = await get_login_session(login_id)
     if not login_state:
@@ -115,7 +115,7 @@ async def list_sessions() -> list[dict]:
     """
     Return all stored Telegram sessions from database.
     """
-    from database import list_sessions as db_list_sessions
+    from backend.database import list_sessions as db_list_sessions
 
     sessions = await db_list_sessions()
     return [

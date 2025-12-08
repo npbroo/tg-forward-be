@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from models import UserCreateRequest, UserModel
-from database import create_user, get_user_by_username, list_users, delete_user
-from password_utils import hash_password
-from auth_jwt import get_current_admin
+from backend.core.models import UserCreateRequest, UserModel
+from backend.database import create_user, get_user_by_username, list_users, delete_user
+from backend.auth.password import hash_password
+from backend.auth import get_current_admin
 
 router = APIRouter(prefix="/users", tags=["users"])
 

@@ -8,10 +8,10 @@ from typing import Any, Dict
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from config import settings
-from models import LoginRequest, LoginResponse
-from database import get_user_by_username
-from password_utils import verify_password
+from backend.core.config import settings
+from backend.core.models import LoginRequest, LoginResponse
+from backend.database import get_user_by_username
+from backend.auth.password import verify_password
 
 
 security = HTTPBearer()

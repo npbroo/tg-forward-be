@@ -26,15 +26,15 @@ from telethon.errors import (
     NetworkMigrateError,
 )
 
-from config import settings
-from session_manager import (
+from backend.core.config import settings
+from backend.services.session_manager import (
     EnhancedSessionManager,
     SessionRegistry,
     SessionErrorType,
 )
-from target_resolver import TargetResolver
-from database import list_routes
-from events import event_emitter, EventType
+from backend.services.target_resolver import TargetResolver
+from backend.database import list_routes
+from backend.services.events import event_emitter, EventType
 
 try:
     from solders.pubkey import Pubkey

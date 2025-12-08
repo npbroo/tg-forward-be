@@ -2,7 +2,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Get the path to the .env file (in the parent directory of backend/)
-env_path = Path(__file__).parent.parent / ".env"
+env_path = Path(__file__).parent.parent.parent / ".env"
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(

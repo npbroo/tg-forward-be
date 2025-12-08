@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from models import (
+from backend.core.models import (
     StartLoginRequest,
     StartLoginResponse,
     ConfirmLoginRequest,
@@ -8,9 +8,9 @@ from models import (
     LoginRequest,
     LoginResponse,
 )
-from telegram_session import start_login, confirm_login
-from auth_jwt import get_current_admin, login as jwt_login
-from database import get_user_by_username
+from backend.services.telegram_session import start_login, confirm_login
+from backend.auth import get_current_admin, login as jwt_login
+from backend.database import get_user_by_username
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 

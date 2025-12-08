@@ -4,10 +4,10 @@ Each user gets their own forwarder instance that uses their Telegram session.
 """
 import asyncio
 from typing import Optional
-from enhanced_forwarder import EnhancedForwarder
-from database import get_user_by_id, get_session
-from session_manager import SessionRegistry
-from events import event_emitter, EventType
+from backend.services.forwarder.enhanced_forwarder import EnhancedForwarder
+from backend.database import get_user_by_id, get_session
+from backend.services.session_manager import SessionRegistry
+from backend.services.events import event_emitter, EventType
 
 
 class UserForwarderWorker:

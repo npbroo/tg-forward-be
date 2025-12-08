@@ -5,8 +5,8 @@ Run this after setting up the database to create your first user.
 import asyncio
 import sys
 
-from database import connect_db, disconnect_db, create_user, get_user_by_username
-from password_utils import hash_password
+from backend.database import connect_db, disconnect_db, create_user, get_user_by_username
+from backend.auth.password import hash_password
 
 
 async def main():

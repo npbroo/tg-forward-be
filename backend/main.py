@@ -5,10 +5,10 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from database import connect_db, disconnect_db
-from routes import auth, dialogs, routing, users
-from forwarder_manager import start_forwarder_manager, stop_forwarder_manager
-from auth_jwt import get_current_admin
+from backend.database import connect_db, disconnect_db
+from backend.api.routes import auth, dialogs, routing, users
+from backend.services.forwarder import start_forwarder_manager, stop_forwarder_manager
+from backend.auth import get_current_admin
 
 
 @asynccontextmanager

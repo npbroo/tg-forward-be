@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from models import DialogModel
-from telegram_session import fetch_dialogs
-from session_manager import SessionRegistry
-from auth_jwt import get_current_admin
-from database import get_user_by_username, db
+from backend.core.models import DialogModel
+from backend.services.telegram_session import fetch_dialogs
+from backend.services.session_manager import SessionRegistry
+from backend.auth import get_current_admin
+from backend.database import get_user_by_username, db
 
 router = APIRouter(prefix="/dialogs", tags=["dialogs"])
 

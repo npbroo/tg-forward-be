@@ -19,11 +19,11 @@ from telethon.errors import (
     NetworkMigrateError,
 )
 
-from config import settings
-from database import (
+from backend.core.config import settings
+from backend.database import (
     get_session, update_session, get_valid_sessions, db
 )
-from events import emit_session_invalidated
+from backend.services.events import emit_session_invalidated
 
 
 class SessionStatus(Enum):
