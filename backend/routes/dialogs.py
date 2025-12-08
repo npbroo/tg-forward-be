@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from models import DialogModel
 from shared.redis_client import redis_get_json, redis_scan_json
 from telegram_session import fetch_dialogs
+from session_manager import SessionRegistry
 from auth_jwt import get_current_admin
 
 router = APIRouter(prefix="/dialogs", tags=["dialogs"])
@@ -43,7 +44,20 @@ async def get_dialogs(
         dialogs = await fetch_dialogs(session_str=session["session_str"])
         return [DialogModel(**d) for d in dialogs]
     except Exception as e:
-        raise HTTPException(
-            status_code=401,
-            detail=f"Session is invalid or expired. Please login again using /auth/start and /auth/confirm. Error: {str(e)}"
-        )
+        # Check if this is an authentication error that should invalidate the session
+        error_str = str(e).lower()
+        auth_errors = ['auth', 'authorization', 'unauthorized', 'not authorized', 'authkey']
+
+        if any(auth_err in error_str for auth_err in auth_errors):
+            # Mark session as invalid for authentication errors
+            await SessionRegistry.mark_session_invalid(session["session_id"], f"Dialog fetch failed: {str(e)}")
+            raise HTTPException(
+                status_code=401,
+                detail=f"Session authentication failed and has been invalidated. Please login again using /auth/start and /auth/confirm. Error: {str(e)}"
+            )
+        else:
+            # For other errors, don't mark session as invalid
+            raise HTTPException(
+                status_code=401,
+                detail=f"Session is invalid or expired. Please login again using /auth/start and /auth/confirm. Error: {str(e)}"
+            )

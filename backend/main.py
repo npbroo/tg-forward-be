@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from shared.redis_client import redis_get_json, redis_set_json
 from routes import auth, dialogs, routing
-from forwarder import run_forwarder
+from enhanced_forwarder import run_forwarder
 from auth_jwt import get_current_admin
 
 

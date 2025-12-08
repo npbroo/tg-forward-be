@@ -1,3 +1,6 @@
+"""
+Enhanced Telegram session management with versioning and improved error handling.
+"""
 import uuid
 from datetime import datetime, timezone
 
@@ -8,27 +11,14 @@ from telethon.tl.types import User, Chat, Channel
 from config import settings
 from shared.redis_client import redis_set_json, redis_get_json, redis_scan_json
 from shared.pubsub import notify_forwarder_reload
-
-
-class TelegramSessionManager:
-    def __init__(self, session_str: str | None = None):
-        self.api_id = settings.TG_API_ID
-        self.api_hash = settings.TG_API_HASH
-        self.session_str = session_str
-
-    def create_client(self) -> TelegramClient:
-        if self.session_str:
-            session = StringSession(self.session_str)
-        else:
-            session = StringSession()
-        return TelegramClient(session, self.api_id, self.api_hash)
+from session_manager import EnhancedSessionManager, SessionRegistry
 
 
 async def start_login(phone: str) -> str:
     """
     Start Telegram login: send code to phone, store temp session + phone_code_hash in Redis.
     """
-    manager = TelegramSessionManager(session_str=None)
+    manager = EnhancedSessionManager(session_str=None)
     client = manager.create_client()
     await client.connect()
 
@@ -66,7 +56,7 @@ async def confirm_login(login_id: str, code: str) -> dict:
     temp_session_str = login_state["session_str"]
     phone_code_hash = login_state["phone_code_hash"]  # Load phone_code_hash from Redis
 
-    manager = TelegramSessionManager(session_str=temp_session_str)
+    manager = EnhancedSessionManager(session_str=temp_session_str)
     client = manager.create_client()
     await client.connect()
 
@@ -92,6 +82,7 @@ async def confirm_login(login_id: str, code: str) -> dict:
         "valid": True,
         "last_error": None,
         "last_checked": current_ts,
+        "version": 1,  # Initialize version counter
     }
 
     await redis_set_json(f"tg:session:{session_id}", session_data)
@@ -112,41 +103,22 @@ async def list_sessions() -> list[dict]:
     return await redis_scan_json("tg:session:*")
 
 
+# For backward compatibility, maintain the original functions
 async def mark_session_invalid(session_id: str, reason: str):
-    """Mark the given session as invalid/disabled with error metadata."""
-    key = f"tg:session:{session_id}"
-    session = await redis_get_json(key)
-    if not session:
-        return
-
-    session["enabled"] = False
-    session["valid"] = False
-    session["last_error"] = reason
-    session["last_checked"] = datetime.now(timezone.utc).isoformat()
-
-    await redis_set_json(key, session)
+    """Legacy function for backward compatibility."""
+    await SessionRegistry.mark_session_invalid(session_id, reason)
 
 
 async def mark_session_checked_ok(session_id: str):
-    """Refresh metadata when a session is healthy."""
-    key = f"tg:session:{session_id}"
-    session = await redis_get_json(key)
-    if not session:
-        return
-
-    session["valid"] = True
-    session.setdefault("enabled", True)
-    session["last_error"] = None
-    session["last_checked"] = datetime.now(timezone.utc).isoformat()
-
-    await redis_set_json(key, session)
+    """Legacy function for backward compatibility."""
+    await SessionRegistry.mark_session_checked_ok(session_id)
 
 
 async def fetch_dialogs(session_str: str) -> list[dict]:
     """
     Given a stored StringSession, connect and return a list of dialogs.
     """
-    manager = TelegramSessionManager(session_str=session_str)
+    manager = EnhancedSessionManager(session_str=session_str)
     client = manager.create_client()
     await client.connect()
 

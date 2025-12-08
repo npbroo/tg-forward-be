@@ -1,0 +1,499 @@
+"""
+Enhanced Telegram forwarder with better error handling, session management, and recovery mechanisms.
+"""
+import asyncio
+import re
+import time
+from typing import Optional, Union, List, Dict, Tuple
+from enum import Enum
+
+from telethon import TelegramClient, events
+from telethon.errors import (
+    AuthKeyUnregisteredError,
+    SessionPasswordNeededError,
+    UserDeactivatedError,
+    FloodWaitError,
+    ChatAdminRequiredError,
+    MessageIdInvalidError,
+    PeerIdInvalidError,
+    ChatWriteForbiddenError,
+    SlowModeWaitError,
+    UserBannedInChannelError,
+    UserNotMutualContactError,
+    UserPrivacyRestrictedError,
+    PhoneNumberBannedError,
+    PhoneMigrateError,
+    NetworkMigrateError,
+)
+
+from config import settings
+from shared.redis_client import redis_get_json, redis_scan_json, redis_client
+from session_manager import (
+    EnhancedSessionManager,
+    SessionRegistry,
+    SessionErrorType,
+)
+from target_resolver import TargetResolver
+
+try:
+    from solders.pubkey import Pubkey
+    SOLANA_AVAILABLE = True
+except ImportError:
+    SOLANA_AVAILABLE = False
+    print("Warning: solders not installed. Solana address validation will be disabled.")
+
+
+CA_REGEX = re.compile(r"(?<![1-9A-HJ-NP-Za-km-z])([1-9A-HJ-NP-Za-km-z]{32,44})(?![1-9A-HJ-NP-Za-km-z])")
+
+
+def parse_chat_id(value: Union[str, int]) -> Union[str, int]:
+    """Parse chat ID from string or int."""
+    if isinstance(value, int):
+        return value
+    v = str(value).strip()
+    if re.fullmatch(r"-?\d+", v):
+        return int(v)
+    return v
+
+
+def is_valid_solana_address(ca: str) -> bool:
+    """Validate if a string is a valid Solana address."""
+    if not SOLANA_AVAILABLE:
+        # If solders is not available, do basic validation
+        return len(ca) >= 32 and len(ca) <= 44
+
+    try:
+        Pubkey.from_string(ca)
+        return True
+    except Exception:
+        return False
+
+
+def transform_message_solana_ca(text: str) -> Optional[str]:
+    """Extract and validate Solana contract address from text."""
+    text = (text or "").strip()
+    if not text:
+        return None
+
+    candidates = CA_REGEX.findall(text)
+    for ca in candidates:
+        if is_valid_solana_address(ca):
+            return ca
+
+    return None
+
+
+def transform_message(text: str, transform_type: str) -> Optional[str]:
+    """Transform message based on transform_type."""
+    text = (text or "").strip()
+    if not text:
+        return None
+
+    if transform_type == "raw":
+        return text
+
+    if transform_type == "solana_ca":
+        return transform_message_solana_ca(text)
+
+    # default fallback
+    return text
+
+
+class ForwarderEventType(Enum):
+    SESSION_CREATED = "session_created"
+    SESSION_INVALIDATED = "session_invalidated"
+    SESSION_ADDED = "session_added"
+    SESSION_REMOVED = "session_removed"
+    ROUTE_UPDATED = "route_updated"
+    ROUTE_CREATED = "route_created"
+    ROUTE_DELETED = "route_deleted"
+    SHUTDOWN_REQUESTED = "shutdown_requested"
+
+
+class EnhancedForwarder:
+    """
+    Enhanced forwarder implementation with improved error handling, 
+    session management, and recovery mechanisms.
+    """
+    
+    def __init__(self):
+        self.shutdown_event: Optional[asyncio.Event] = None
+        self.session_lock_id: Optional[str] = None
+        self.active_client: Optional[TelegramClient] = None
+        self.target_resolver: Optional[TargetResolver] = None
+        self.is_running = False
+        
+        # Track consecutive failures for backoff
+        self.consecutive_failures = 0
+        self.max_backoff_time = 300  # 5 minutes max backoff
+        
+        # Track route errors separately from session errors
+        self.route_error_counts: Dict[str, int] = {}
+        self.session_error_counts: Dict[str, int] = {}
+
+    async def load_enabled_routes(self) -> List[Dict]:
+        """Load all enabled routes from Redis."""
+        routes = await redis_scan_json("tg:route:route_*")
+        return [r for r in routes if r.get("enabled", True)]
+
+    async def run_forwarder(self):
+        """Main forwarder worker loop with Redis pub/sub reload support."""
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe("forwarder:reload", "forwarder:control")
+        print(f"[PUBSUB] Subscribed to forwarder channels")
+
+        # Check if there are any sessions available initially
+        if not await SessionRegistry.is_session_available():
+            print("[FORWARDER] No healthy sessions available, waiting for session creation...")
+            # Wait for session creation signal
+            await self.wait_for_session_creation(pubsub)
+
+        while True:
+            # Calculate dynamic backoff based on failure count
+            if self.consecutive_failures > 0:
+                backoff_time = min(5 * (2 ** min(self.consecutive_failures - 1, 6)), self.max_backoff_time)
+                print(f"[FORWARDER] Waiting {backoff_time}s before restart due to {self.consecutive_failures} consecutive failures...")
+                try:
+                    await asyncio.sleep(backoff_time)
+                except asyncio.CancelledError:
+                    print("[FORWARDER] Forwarder cancelled during backoff, shutting down...")
+                    break
+
+            # Create shutdown event for this instance
+            self.shutdown_event = asyncio.Event()
+
+            # Start forwarder instance
+            forwarder_task = asyncio.create_task(self.run_forwarder_instance())
+
+            # Listen for reload signals
+            async def listen_for_signals():
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        channel = message["channel"]
+                        reason = message["data"].decode() if isinstance(message["data"], bytes) else message["data"]
+                        
+                        print(f"[SIGNAL] Received {channel} with reason: {reason}")
+                        
+                        if channel == "forwarder:control" and reason == ForwarderEventType.SHUTDOWN_REQUESTED.value:
+                            print("[SHUTDOWN] Shutdown requested, stopping forwarder...")
+                            self.shutdown_event.set()
+                            break
+                        else:
+                            print(f"[RELOAD] Received reload signal: {reason}")
+                            self.shutdown_event.set()
+                            break
+
+            signal_listener = asyncio.create_task(listen_for_signals())
+
+            # Wait for either task to complete
+            done, pending = await asyncio.wait(
+                [forwarder_task, signal_listener],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            # Wait for forwarder to fully stop
+            try:
+                await forwarder_task
+            except asyncio.CancelledError:
+                print("[FORWARDER] Forwarder instance was cancelled")
+            except Exception as e:
+                print(f"[ERROR] Forwarder instance failed with error: {e}")
+
+            # Check if forwarder crashed or was intentionally reloaded
+            if forwarder_task.done() and not self.shutdown_event.is_set():
+                # Forwarder exited on its own (due to error or no routes)
+                self.consecutive_failures += 1
+                print(f"[FORWARDER] Exited due to error (#{self.consecutive_failures}), will retry...")
+            else:
+                # Reload signal received - reset failure counter
+                self.consecutive_failures = 0
+                print("[RELOAD] Restarting forwarder with new configuration...")
+                await asyncio.sleep(1)  # Brief pause before restart
+
+    async def wait_for_session_creation(self, pubsub):
+        """Wait for a session creation signal before proceeding."""
+        print("[WAIT] Waiting for session creation signal...")
+        async for message in pubsub.listen():
+            if (message["type"] == "message" and 
+                message["channel"] == "forwarder:reload" and
+                (ForwarderEventType.SESSION_CREATED.value in str(message["data"]) or
+                 ForwarderEventType.SESSION_ADDED.value in str(message["data"]))):
+                print("[WAIT] Session created signal received, proceeding...")
+                return
+
+    async def run_forwarder_instance(self):
+        """
+        Run a single instance of the forwarder.
+        Returns when shutdown_event is set or client disconnects.
+        """
+        self.is_running = True
+        
+        try:
+            session_id, session_str, session_data = await self.load_preferred_session()
+        except RuntimeError as e:
+            print(f"[FORWARDER] {e}")
+            return
+
+        # Try to acquire session lock
+        lock_id = await SessionRegistry.acquire_session_lock(session_id)
+        if not lock_id:
+            print(f"[FORWARDER] Session {session_id} is already locked by another instance, exiting...")
+            return
+        
+        self.session_lock_id = lock_id
+        print(f"[FORWARDER] Acquired lock for session {session_id}")
+
+        # Initialize client and resolver
+        manager = EnhancedSessionManager(session_str=session_str)
+        client = manager.create_client()
+        self.active_client = client
+
+        try:
+            # Load routes
+            routes = await self.load_enabled_routes()
+            if not routes:
+                print("No enabled routes found.")
+                return
+
+            # Build normalized route configs
+            route_configs: List[Dict] = []
+            source_filters: List[Union[int, str]] = []
+
+            for r in routes:
+                src = parse_chat_id(r["source_chat"])
+                tgt = parse_chat_id(r["target_chat"])
+
+                cfg = {
+                    "route_id": r["route_id"],
+                    "source_chat": src,
+                    "target_chat": tgt,
+                    "transform_type": r.get("transform_type", "solana_ca"),
+                    "enabled": r.get("enabled", True),
+                }
+                route_configs.append(cfg)
+                source_filters.append(src)
+
+            # Set up message handler
+            @client.on(events.NewMessage(chats=source_filters))
+            async def handler(event: events.NewMessage.Event):
+                await self.handle_message(event, route_configs, session_id)
+
+            # Connect to Telegram
+            try:
+                await client.connect()
+                
+                # Validate session health
+                is_authorized = await client.is_user_authorized()
+                if not is_authorized:
+                    await SessionRegistry.mark_session_invalid(session_id, "Session not authorized")
+                    print("[FORWARDER] Session not authorized; marking invalid and stopping.")
+                    return
+                
+                # Update session health
+                await SessionRegistry.mark_session_checked_ok(session_id)
+
+            except Exception as e:
+                error_type = self._classify_error(e)
+                error_msg = f"{type(e).__name__}: {e}"
+                
+                if error_type == SessionErrorType.AUTH_ERROR:
+                    await SessionRegistry.mark_session_invalid(session_id, error_msg, error_type)
+                    print(f"[FORWARDER] Auth error; marking session invalid and stopping: {error_msg}")
+                    return
+                else:
+                    print(f"[FORWARDER] Connection error (not auth-related): {error_msg}")
+                    raise  # Re-raise for forwarder restart
+
+            # Get user info for logging
+            me = await client.get_me()
+            print(f"Forwarder running as: {me.username or me.id}")
+
+            # Initialize target resolver
+            self.target_resolver = TargetResolver(client)
+            
+            # Resolve target entities using the new resolver
+            for rc in route_configs:
+                target_entity = await self.target_resolver.resolve_target(rc["target_chat"])
+                if target_entity is None:
+                    print(
+                        f"[WARN] Could not resolve target_chat={rc['target_chat']!r} for route {rc['route_id']}. "
+                        f"This route will be skipped."
+                    )
+                else:
+                    rc["target_entity"] = target_entity
+
+            print(f"[FORWARDER] Ready to forward from {len(source_filters)} sources to {len(route_configs)} routes")
+
+            # Wait for shutdown signal
+            try:
+                await self.shutdown_event.wait()
+                print("[RELOAD] Shutdown signal received, disconnecting...")
+            finally:
+                pass
+
+        except asyncio.CancelledError:
+            print("[FORWARDER] Forwarder instance cancelled")
+        except Exception as e:
+            print(f"[FORWARDER] Forwarder instance failed with error: {e}")
+            raise
+        finally:
+            # Cleanup resources
+            if self.active_client:
+                try:
+                    await self.active_client.disconnect()
+                except Exception as e:
+                    print(f"[CLEANUP] Error disconnecting client: {e}")
+                self.active_client = None
+
+            # Release session lock
+            if self.session_lock_id:
+                await SessionRegistry.release_session_lock(session_id, self.session_lock_id)
+                print(f"[FORWARDER] Released lock for session {session_id}")
+                self.session_lock_id = None
+
+            self.is_running = False
+            print("[FORWARDER] Instance cleanup completed")
+
+    async def handle_message(self, event: events.NewMessage.Event, route_configs: List[Dict], session_id: str):
+        """Handle an incoming message and forward it according to configured routes."""
+        ent = event.chat
+        src_id = getattr(ent, "id", None)
+        username = getattr(ent, "username", None)
+        chat_id = event.chat_id
+
+        # Find matching routes for this event
+        matched_routes = []
+        for rc in route_configs:
+            src = rc["source_chat"]
+
+            # Numeric match: compare absolute values to handle positive/negative IDs
+            if isinstance(src, int):
+                # Try matching with src_id first
+                if isinstance(src_id, int) and src == src_id:
+                    matched_routes.append(rc)
+                # Also try matching with chat_id (handles negative IDs)
+                elif abs(src) == abs(chat_id):
+                    matched_routes.append(rc)
+
+            # String match: treat as username
+            elif isinstance(src, str) and username and src.lower() == username.lower():
+                matched_routes.append(rc)
+
+        if not matched_routes:
+            return
+
+        # Try raw_text first, fallback to text, then message attribute
+        original_text = event.raw_text or event.text or getattr(event.message, 'message', '') or ""
+        text_preview = original_text.replace('\n', ' ')[:60]
+
+        for rc in matched_routes:
+            new_text = transform_message(original_text, rc["transform_type"])
+
+            if new_text is None:
+                print(f"[SKIP] {rc['route_id']} | No match | {text_preview}...")
+                continue
+
+            print(f"[FORWARD] {rc['route_id']} | Matched: {new_text[:44]} | From: {text_preview}...")
+
+            target_entity = rc.get("target_entity")
+            if target_entity is None:
+                # Try to resolve the target on-the-fly if not cached
+                target_entity = await self.target_resolver.resolve_target(rc["target_chat"], force_refresh=True)
+                if target_entity is None:
+                    print(f"[SKIP] {rc['route_id']} | Target not resolved | {text_preview}...")
+                    continue
+                rc["target_entity"] = target_entity
+
+            try:
+                await self.active_client.send_message(target_entity, new_text)
+                print(f"[SUCCESS] Message sent for route {rc['route_id']}")
+            except Exception as e:
+                await self.handle_send_error(e, rc['route_id'], session_id, text_preview)
+
+    async def handle_send_error(self, error: Exception, route_id: str, session_id: str, text_preview: str):
+        """Handle errors that occur during message sending."""
+        error_type = self._classify_error(error)
+        error_msg = f"{type(error).__name__}: {error}"
+
+        # If this is a session-related error, mark the session as invalid
+        if error_type == SessionErrorType.AUTH_ERROR:
+            await SessionRegistry.mark_session_invalid(session_id, error_msg, error_type)
+            print(f"[SESSION ERROR] Marking session {session_id} as invalid: {error_msg}")
+            # Set shutdown event to allow failover to another session
+            if self.shutdown_event:
+                self.shutdown_event.set()
+        elif error_type == SessionErrorType.RATE_LIMIT_ERROR:
+            # Track route-specific rate limit errors
+            self.route_error_counts[route_id] = self.route_error_counts.get(route_id, 0) + 1
+            print(f"[RATE LIMIT] Route {route_id} hit rate limit: {error_msg}")
+            # Don't mark session invalid, just log the issue
+        elif error_type == SessionErrorType.NETWORK_ERROR:
+            # Network errors are usually transient
+            print(f"[NETWORK ERROR] Network issue for route {route_id}: {error_msg}")
+        else:
+            # Other errors might be route-specific
+            self.route_error_counts[route_id] = self.route_error_counts.get(route_id, 0) + 1
+            print(f"[ROUTE ERROR] Failed to send message for route {route_id}: {error_msg}")
+
+    @staticmethod
+    def _classify_error(error: Exception) -> SessionErrorType:
+        """Classify an error to determine if it's session-related."""
+        error_type = type(error)
+        
+        # Authentication-related errors - mark session as invalid
+        auth_errors = (
+            AuthKeyUnregisteredError, 
+            UserDeactivatedError, 
+            SessionPasswordNeededError,
+            PhoneNumberBannedError,
+        )
+        
+        if isinstance(error, auth_errors):
+            return SessionErrorType.AUTH_ERROR
+            
+        # Rate limiting errors - don't mark session invalid
+        rate_limit_errors = (
+            FloodWaitError,
+            SlowModeWaitError,
+        )
+        
+        if isinstance(error, rate_limit_errors):
+            return SessionErrorType.RATE_LIMIT_ERROR
+            
+        # Network-related errors - usually transient
+        network_errors = (
+            PhoneMigrateError,
+            NetworkMigrateError,
+        )
+        
+        if isinstance(error, network_errors):
+            return SessionErrorType.NETWORK_ERROR
+            
+        # Default to transient error that doesn't affect session
+        return SessionErrorType.TRANSIENT_ERROR
+
+    async def load_preferred_session(self) -> Tuple[str, str, dict]:
+        """Load the best available session."""
+        session_id, session_str, session_data = await SessionRegistry.get_healthy_session()
+        
+        if not session_id:
+            raise RuntimeError("No healthy sessions available")
+            
+        return session_id, session_str, session_data
+
+
+# Legacy function for backward compatibility if needed elsewhere
+async def run_forwarder():
+    """
+    Legacy function to maintain compatibility with main.py
+    """
+    forwarder = EnhancedForwarder()
+    await forwarder.run_forwarder()
