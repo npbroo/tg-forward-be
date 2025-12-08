@@ -1,3 +1,5 @@
+"""Authentication and session routes."""
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.core.models import (
@@ -10,7 +12,7 @@ from backend.core.models import (
 )
 from backend.services.telegram_session import start_login, confirm_login
 from backend.auth import get_current_admin, login as jwt_login
-from backend.database import get_user_by_username
+from backend.database import db, get_user_by_username
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -67,4 +69,37 @@ async def auth_confirm(
     )
 
 
-# Note: /auth/session endpoint removed - use /sessions to list all sessions for the user
+@router.get("/session", response_model=SessionModel)
+async def get_current_session(username: str = Depends(get_current_admin)):
+    """
+    Return the authenticated user's most recent valid Telegram session.
+    """
+    user = await get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    sessions = await db.session.find_many(
+        where={
+            "userId": user.id,
+            "enabled": True,
+            "valid": True,
+        },
+        order={"lastActivity": "desc"},
+    )
+
+    if not sessions:
+        raise HTTPException(
+            status_code=404,
+            detail="No valid Telegram sessions found for this user",
+        )
+
+    session = sessions[0]
+    return SessionModel(
+        session_id=session.sessionId,
+        label=session.label,
+        phone=session.phone,
+        enabled=session.enabled,
+        valid=session.valid,
+        last_error=session.lastError,
+        last_checked=session.lastChecked.isoformat() if session.lastChecked else None,
+    )
