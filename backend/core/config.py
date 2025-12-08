@@ -14,7 +14,6 @@ class Settings(BaseSettings):
 
     TG_API_ID: int
     TG_API_HASH: str
-    TG_PHONE: str
 
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str = "password"

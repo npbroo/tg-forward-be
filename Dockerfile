@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the FastAPI app code
 COPY . /app
 
+# Generate Prisma client
+RUN prisma generate --schema=/app/backend/schema.prisma
+
 # Expose FastAPI port
 EXPOSE 8000
 
