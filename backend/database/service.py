@@ -1,12 +1,18 @@
 """
 Database service layer using Prisma ORM for MySQL.
 """
+import os
 from typing import Optional, List
+
 from prisma import Prisma
 from prisma.models import User, Session, Route, LoginSession
 
 # Global Prisma client instance
-db = Prisma()
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is required")
+
+db = Prisma(datasource={"url": DATABASE_URL})
 
 
 async def connect_db():
