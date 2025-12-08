@@ -50,6 +50,14 @@ async def update_user_password(username: str, hashed_password: str) -> Optional[
     )
 
 
+async def set_user_tg_account(user_id: str, tg_account: str | None) -> Optional[User]:
+    """Update a user's associated Telegram account name."""
+    return await db.user.update(
+        where={"id": user_id},
+        data={"tgAccount": tg_account}
+    )
+
+
 async def delete_user(username: str) -> Optional[User]:
     """Delete a user."""
     return await db.user.delete(where={"username": username})
@@ -80,19 +88,27 @@ async def create_session(
     valid: bool = True,
     user_id: Optional[str] = None
 ) -> Session:
-    """Create a new session."""
-    return await db.session.create(
-        data={
-            "sessionId": session_id,
-            "sessionStr": session_str,
-            "label": label,
-            "phone": phone,
-            "enabled": enabled,
-            "valid": valid,
-            "version": 0,
-            "userId": user_id
-        }
-    )
+    """Create or update a session. Each user maintains at most one session."""
+    data = {
+        "sessionId": session_id,
+        "sessionStr": session_str,
+        "label": label,
+        "phone": phone,
+        "enabled": enabled,
+        "valid": valid,
+        "version": 0,
+        "userId": user_id,
+    }
+
+    if user_id:
+        existing = await db.session.find_first(where={"userId": user_id})
+        if existing:
+            return await db.session.update(
+                where={"sessionId": existing.sessionId},
+                data=data
+            )
+
+    return await db.session.create(data=data)
 
 
 async def update_session(session_id: str, data: dict) -> Optional[Session]:
@@ -123,9 +139,12 @@ async def get_valid_sessions() -> List[Session]:
 
 
 # Route operations
-async def get_route(route_id: str) -> Optional[Route]:
-    """Get a route by route_id."""
-    return await db.route.find_unique(where={"routeId": route_id})
+async def get_route(route_id: str, user_id: str | None = None) -> Optional[Route]:
+    """Get a route by route_id, optionally filtered by user."""
+    where: dict = {"routeId": route_id}
+    if user_id:
+        where["userId"] = user_id
+    return await db.route.find_first(where=where)
 
 
 async def create_route(
@@ -133,38 +152,57 @@ async def create_route(
     source_chat: str,
     target_chat: str,
     transform_type: str = "solana_ca",
-    enabled: bool = True
+    enabled: bool = True,
+    user_id: str | None = None,
 ) -> Route:
     """Create a new route."""
+    if not user_id:
+        raise ValueError("user_id is required to create a route")
     return await db.route.create(
         data={
             "routeId": route_id,
             "sourceChat": source_chat,
             "targetChat": target_chat,
             "transformType": transform_type,
-            "enabled": enabled
+            "enabled": enabled,
+            "userId": user_id,
         }
     )
 
 
-async def update_route(route_id: str, data: dict) -> Optional[Route]:
-    """Update a route by route_id."""
+async def update_route(route_id: str, data: dict, user_id: str | None = None) -> Optional[Route]:
+    """Update a route by route_id, optionally filtered by user."""
+    # First verify the route exists and belongs to the user
+    if user_id:
+        existing = await get_route(route_id, user_id=user_id)
+        if not existing:
+            return None
+
     return await db.route.update(
         where={"routeId": route_id},
         data=data
     )
 
 
-async def delete_route(route_id: str) -> Optional[Route]:
-    """Delete a route by route_id."""
+async def delete_route(route_id: str, user_id: str | None = None) -> Optional[Route]:
+    """Delete a route by route_id, optionally filtered by user."""
+    # First verify the route exists and belongs to the user
+    if user_id:
+        existing = await get_route(route_id, user_id=user_id)
+        if not existing:
+            return None
+
     return await db.route.delete(where={"routeId": route_id})
 
 
-async def list_routes(enabled_only: bool = False) -> List[Route]:
-    """List all routes, optionally filtered by enabled status."""
+async def list_routes(enabled_only: bool = False, user_id: str | None = None) -> List[Route]:
+    """List all routes, optionally filtered by enabled status and user."""
+    where: dict = {}
     if enabled_only:
-        return await db.route.find_many(where={"enabled": True})
-    return await db.route.find_many()
+        where["enabled"] = True
+    if user_id:
+        where["userId"] = user_id
+    return await db.route.find_many(where=where or None)
 
 
 # LoginSession operations (for temporary Telegram login process)

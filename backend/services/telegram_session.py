@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from telethon.tl.types import User, Chat, Channel
 
 from backend.services.session_manager import EnhancedSessionManager, SessionRegistry
-from backend.database import create_session
+from backend.database import create_session, set_user_tg_account
 
 
 async def start_login(phone: str) -> str:
@@ -72,6 +72,7 @@ async def confirm_login(login_id: str, code: str, user_id: str = None) -> dict:
 
     session_id = f"sess_{uuid.uuid4().hex}"
     label = me.username or phone
+    tg_account = me.username or getattr(me, "first_name", None) or getattr(me, "last_name", None) or phone
 
     # Save to MySQL database
     await create_session(
@@ -83,6 +84,9 @@ async def confirm_login(login_id: str, code: str, user_id: str = None) -> dict:
         valid=True,
         user_id=user_id
     )
+
+    if user_id:
+        await set_user_tg_account(user_id, tg_account)
 
     # Clean up the temporary login session
     await delete_login_session(login_id)

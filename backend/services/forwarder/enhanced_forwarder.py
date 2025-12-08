@@ -97,7 +97,10 @@ class EnhancedForwarder:
     session management, and recovery mechanisms.
     """
     
-    def __init__(self):
+    def __init__(self, user_id: Optional[str]):
+        if not user_id:
+            raise ValueError("user_id is required for EnhancedForwarder")
+        self.user_id = user_id
         self.shutdown_event: Optional[asyncio.Event] = None
         self.active_client: Optional[TelegramClient] = None
         self.target_resolver: Optional[TargetResolver] = None
@@ -114,7 +117,7 @@ class EnhancedForwarder:
 
     async def load_enabled_routes(self) -> List[Dict]:
         """Load all enabled routes from database."""
-        routes = await list_routes(enabled_only=True)
+        routes = await list_routes(enabled_only=True, user_id=self.user_id)
         return [
             {
                 "route_id": r.routeId,
@@ -292,7 +295,9 @@ class EnhancedForwarder:
             # Load routes
             routes = await self.load_enabled_routes()
             if not routes:
-                print("No enabled routes found.")
+                print("[FORWARDER] No enabled routes found. Waiting for updates...")
+                await self.shutdown_event.wait()
+                print("[FORWARDER] Route update or shutdown detected, restarting forwarder.")
                 return
 
             # Build normalized route configs

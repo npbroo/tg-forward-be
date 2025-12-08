@@ -3,23 +3,41 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Path
 
 from backend.core.models import RouteCreateRequest, RouteUpdateRequest, RouteModel
-from backend.database import create_route as db_create_route, get_route, update_route as db_update_route, delete_route as db_delete_route, list_routes as db_list_routes
+from backend.database import (
+    create_route as db_create_route,
+    get_route,
+    update_route as db_update_route,
+    delete_route as db_delete_route,
+    list_routes as db_list_routes,
+    get_user_by_username,
+)
 from backend.services.events import emit_route_change
 from backend.auth import get_current_admin
 
 router = APIRouter(prefix="/routes", tags=["routes"])
+
+
+async def _require_current_user(username: str):
+    user = await get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
 @router.post("", response_model=RouteModel)
 async def create_route(
     body: RouteCreateRequest,
-    _: str = Depends(get_current_admin),
+    username: str = Depends(get_current_admin),
 ):
+    user = await _require_current_user(username)
     route_id = f"route_{uuid.uuid4().hex}"
     route = await db_create_route(
         route_id=route_id,
         source_chat=str(body.source_chat),
         target_chat=str(body.target_chat),
         transform_type=body.transform_type,
-        enabled=body.enabled
+        enabled=body.enabled,
+        user_id=user.id,
     )
     await emit_route_change()
     return RouteModel(
@@ -33,9 +51,10 @@ async def create_route(
 
 @router.get("", response_model=list[RouteModel])
 async def list_routes(
-    _: str = Depends(get_current_admin),
+    username: str = Depends(get_current_admin),
 ):
-    routes = await db_list_routes()
+    user = await _require_current_user(username)
+    routes = await db_list_routes(user_id=user.id)
     return [RouteModel(
         route_id=r.routeId,
         source_chat=r.sourceChat,
@@ -49,9 +68,10 @@ async def list_routes(
 async def update_route(
     body: RouteUpdateRequest,
     route_id: str = Path(...),
-    _: str = Depends(get_current_admin),
+    username: str = Depends(get_current_admin),
 ):
-    existing = await get_route(route_id)
+    user = await _require_current_user(username)
+    existing = await get_route(route_id, user_id=user.id)
     if not existing:
         raise HTTPException(status_code=404, detail="Route not found")
 
@@ -65,7 +85,10 @@ async def update_route(
     if body.target_chat is not None:
         update_data["targetChat"] = str(body.target_chat)
 
-    route = await db_update_route(route_id, update_data)
+    route = await db_update_route(route_id, update_data, user_id=user.id)
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found or unauthorized")
+
     await emit_route_change()
     return RouteModel(
         route_id=route.routeId,
@@ -79,13 +102,17 @@ async def update_route(
 @router.delete("/{route_id}")
 async def delete_route(
     route_id: str = Path(...),
-    _: str = Depends(get_current_admin),
+    username: str = Depends(get_current_admin),
 ):
-    existing = await get_route(route_id)
+    user = await _require_current_user(username)
+    existing = await get_route(route_id, user_id=user.id)
     if not existing:
         raise HTTPException(status_code=404, detail="Route not found")
 
-    await db_delete_route(route_id)
+    deleted = await db_delete_route(route_id, user_id=user.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Route not found or unauthorized")
+
     await emit_route_change()
 
     return {"ok": True}

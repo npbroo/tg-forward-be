@@ -1,6 +1,9 @@
 """Authentication and session routes."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from backend.core.models import (
     StartLoginRequest,
@@ -69,7 +72,7 @@ async def auth_confirm(
     )
 
 
-@router.get("/session", response_model=SessionModel)
+@router.get("/session", response_model=SessionModel | dict)
 async def get_current_session(username: str = Depends(get_current_admin)):
     """
     Return the authenticated user's most recent valid Telegram session.
@@ -88,9 +91,14 @@ async def get_current_session(username: str = Depends(get_current_admin)):
     )
 
     if not sessions:
-        raise HTTPException(
-            status_code=404,
-            detail="No valid Telegram sessions found for this user",
+        now_iso = datetime.now(timezone.utc).isoformat()
+        return JSONResponse(
+            content={
+                "enabled": False,
+                "valid": False,
+                "last_error": "No valid telegram sessions found for this user.",
+                "last_checked": now_iso,
+            }
         )
 
     session = sessions[0]

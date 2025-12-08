@@ -114,7 +114,7 @@ class UserForwarderWorker:
             return
 
         print(f"[USER-WORKER:{self.username}] Launching session {session.sessionId}")
-        self.forwarder = EnhancedForwarder()
+        self.forwarder = EnhancedForwarder(user_id=self.user_id)
 
         async def load_user_session():
             fresh_session = await self._get_user_session()
